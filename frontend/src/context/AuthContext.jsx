@@ -148,7 +148,7 @@ export function AuthProvider({ children }) {
     // ===================================================
 
     localStorage.setItem(
-      TOKEN_KEY,
+      "access_token",
       data.access_token
     );
 
@@ -173,8 +173,8 @@ export function AuthProvider({ children }) {
   // =====================================================
 
   function logout() {
-    localStorage.removeItem(TOKEN_KEY);
-    localStorage.removeItem(USER_KEY);
+    localStorage.removeItem("access_token");
+    localStorage.removeItem("user");
 
     setUser(null);
   }

@@ -1,6 +1,7 @@
 const API_BASE_URL =
   import.meta.env.VITE_API_URL ||
-  "http://127.0.0.1:8000";
+  "https://disaster-dashboard-9qr8.onrender.com";
+
 
 async function request(endpoint, options = {}) {
   const token = localStorage.getItem("access_token");
@@ -10,6 +11,7 @@ async function request(endpoint, options = {}) {
     ...(options.headers || {}),
   };
 
+  // Add JWT token
   if (token) {
     headers.Authorization = `Bearer ${token}`;
   }
@@ -30,6 +32,7 @@ async function request(endpoint, options = {}) {
     data = null;
   }
 
+  // Unauthorized
   if (response.status === 401) {
     localStorage.removeItem("access_token");
     localStorage.removeItem("user");
@@ -51,6 +54,7 @@ async function request(endpoint, options = {}) {
 
   return data;
 }
+
 
 export const api = {
   get(endpoint) {
@@ -79,5 +83,6 @@ export const api = {
     });
   },
 };
+
 
 export { API_BASE_URL };
