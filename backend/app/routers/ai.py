@@ -52,6 +52,7 @@ Important rules:
     "/ask",
     response_model=AIResponse,
 )
+
 def ask_ai(
     data: AIRequest,
     current_user=Depends(get_current_user),
@@ -62,6 +63,7 @@ def ask_ai(
     # =====================================================
 
     api_key = os.getenv("GROQ_API_KEY")
+    
 
     if not api_key:
         raise HTTPException(
