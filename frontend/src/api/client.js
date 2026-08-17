@@ -1,8 +1,9 @@
 const API_BASE_URL =
-  import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
+  import.meta.env.VITE_API_URL ||
+  "http://127.0.0.1:8000";
 
 async function request(endpoint, options = {}) {
-  const token = localStorage.getItem("disaster_access_token");
+  const token = localStorage.getItem("access_token");
 
   const headers = {
     "Content-Type": "application/json",
@@ -13,10 +14,13 @@ async function request(endpoint, options = {}) {
     headers.Authorization = `Bearer ${token}`;
   }
 
-  const response = await fetch(`${API_BASE_URL}${endpoint}`, {
-    ...options,
-    headers,
-  });
+  const response = await fetch(
+    `${API_BASE_URL}${endpoint}`,
+    {
+      ...options,
+      headers,
+    }
+  );
 
   let data = null;
 
@@ -27,10 +31,12 @@ async function request(endpoint, options = {}) {
   }
 
   if (response.status === 401) {
-    localStorage.removeItem("disaster_access_token");
-    localStorage.removeItem("disaster_user");
+    localStorage.removeItem("access_token");
+    localStorage.removeItem("user");
 
-    window.dispatchEvent(new Event("auth:logout"));
+    window.dispatchEvent(
+      new Event("auth-expired")
+    );
 
     throw new Error("SESSION_EXPIRED");
   }
