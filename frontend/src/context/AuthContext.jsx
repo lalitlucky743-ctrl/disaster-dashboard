@@ -5,17 +5,26 @@ import {
   useState,
 } from "react";
 
-import { apiRequest } from "../services/api";
+import {
+  apiRequest,
+  TOKEN_KEY,
+  USER_KEY,
+} from "../services/api";
+
+/* =========================================================
+   AUTH CONTEXT
+========================================================= */
 
 const AuthContext = createContext(null);
 
-const TOKEN_KEY = "disaster_access_token";
-const USER_KEY = "disaster_user";
+/* =========================================================
+   AUTH PROVIDER
+========================================================= */
 
 export function AuthProvider({ children }) {
-  // =====================================================
-  // RESTORE USER
-  // =====================================================
+  /* =======================================================
+     RESTORE USER
+  ======================================================= */
 
   const [user, setUser] = useState(() => {
     try {
@@ -25,52 +34,64 @@ export function AuthProvider({ children }) {
       return savedUser
         ? JSON.parse(savedUser)
         : null;
-    } catch {
+    } catch (error) {
+      console.error(
+        "Failed to restore saved user:",
+        error
+      );
+
       localStorage.removeItem(USER_KEY);
+
       return null;
     }
   });
 
   const [loading, setLoading] = useState(true);
 
-  // =====================================================
-  // RESTORE SESSION
-  // =====================================================
+  /* =======================================================
+     RESTORE SESSION
+  ======================================================= */
 
   useEffect(() => {
-    const token =
-      localStorage.getItem(TOKEN_KEY);
+    try {
+      const token =
+        localStorage.getItem(TOKEN_KEY);
 
-    if (token) {
-      try {
-        const savedUser =
-          localStorage.getItem(USER_KEY);
+      const savedUser =
+        localStorage.getItem(USER_KEY);
 
-        if (savedUser) {
-          setUser(JSON.parse(savedUser));
-        }
-      } catch (error) {
-        console.error(
-          "Failed to restore user:",
-          error
-        );
-
-        localStorage.removeItem(TOKEN_KEY);
-        localStorage.removeItem(USER_KEY);
-
+      if (token && savedUser) {
+        setUser(JSON.parse(savedUser));
+      } else if (!token) {
+        // No token = no authenticated session
         setUser(null);
+        localStorage.removeItem(USER_KEY);
       }
+    } catch (error) {
+      console.error(
+        "Failed to restore authentication:",
+        error
+      );
+
+      localStorage.removeItem(TOKEN_KEY);
+      localStorage.removeItem(USER_KEY);
+
+      setUser(null);
     }
 
     setLoading(false);
 
-    // ===================================================
-    // HANDLE EXPIRED SESSION
-    // ===================================================
+    /* =====================================================
+       HANDLE AUTH LOGOUT / SESSION EXPIRY
+    ===================================================== */
 
     const handleLogout = () => {
       localStorage.removeItem(TOKEN_KEY);
       localStorage.removeItem(USER_KEY);
+
+      // Compatibility cleanup
+      localStorage.removeItem("access_token");
+      localStorage.removeItem("user");
 
       setUser(null);
     };
@@ -88,9 +109,9 @@ export function AuthProvider({ children }) {
     };
   }, []);
 
-  // =====================================================
-  // REGISTER
-  // =====================================================
+  /* =========================================================
+     REGISTER
+  ========================================================= */
 
   async function register(
     name,
@@ -101,7 +122,6 @@ export function AuthProvider({ children }) {
       "/api/auth/register",
       {
         method: "POST",
-
         body: JSON.stringify({
           name,
           email,
@@ -113,9 +133,9 @@ export function AuthProvider({ children }) {
     return data;
   }
 
-  // =====================================================
-  // LOGIN
-  // =====================================================
+  /* =========================================================
+     LOGIN
+  ========================================================= */
 
   async function login(
     email,
@@ -125,7 +145,6 @@ export function AuthProvider({ children }) {
       "/api/auth/login",
       {
         method: "POST",
-
         body: JSON.stringify({
           email,
           password,
@@ -133,9 +152,9 @@ export function AuthProvider({ children }) {
       }
     );
 
-    // ===================================================
-    // CHECK TOKEN
-    // ===================================================
+    /* =====================================================
+       CHECK TOKEN
+    ===================================================== */
 
     if (!data?.access_token) {
       throw new Error(
@@ -143,18 +162,18 @@ export function AuthProvider({ children }) {
       );
     }
 
-    // ===================================================
-    // SAVE TOKEN
-    // ===================================================
+    /* =====================================================
+       SAVE TOKEN
+    ===================================================== */
 
     localStorage.setItem(
-      "access_token",
+      TOKEN_KEY,
       data.access_token
     );
 
-    // ===================================================
-    // SAVE USER
-    // ===================================================
+    /* =====================================================
+       SAVE USER
+    ===================================================== */
 
     if (data.user) {
       localStorage.setItem(
@@ -163,25 +182,37 @@ export function AuthProvider({ children }) {
       );
 
       setUser(data.user);
+    } else {
+      // Even if backend doesn't return user,
+      // token is still saved.
+      setUser(null);
     }
 
     return data;
   }
 
-  // =====================================================
-  // LOGOUT
-  // =====================================================
+  /* =========================================================
+     LOGOUT
+  ========================================================= */
 
   function logout() {
+    localStorage.removeItem(TOKEN_KEY);
+    localStorage.removeItem(USER_KEY);
+
+    // Compatibility cleanup
     localStorage.removeItem("access_token");
     localStorage.removeItem("user");
 
     setUser(null);
+
+    window.dispatchEvent(
+      new Event("auth:logout")
+    );
   }
 
-  // =====================================================
-  // CONTEXT VALUE
-  // =====================================================
+  /* =========================================================
+     CONTEXT VALUE
+  ========================================================= */
 
   const value = {
     user,
@@ -199,9 +230,9 @@ export function AuthProvider({ children }) {
   );
 }
 
-// =========================================================
-// USE AUTH
-// =========================================================
+/* =========================================================
+   USE AUTH
+========================================================= */
 
 export function useAuth() {
   const context = useContext(AuthContext);
