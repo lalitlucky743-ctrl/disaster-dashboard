@@ -1,18 +1,21 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
 
 from .database import Base, engine
 from .routers import auth
 from .routers import dashboard
 from .routers import ai
+from .routers import weather
+
 
 Base.metadata.create_all(bind=engine)
+
 
 app = FastAPI(
     title="Disaster Intelligence Platform",
     version="1.0.0",
 )
+
 
 app.add_middleware(
     CORSMiddleware,
@@ -28,22 +31,36 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+# Authentication
 app.include_router(
     auth.router,
     prefix="/api/auth",
     tags=["Authentication"],
 )
 
+
+# Dashboard
 app.include_router(
     dashboard.router,
     prefix="/api/dashboard",
     tags=["Dashboard"],
 )
 
+
+# Groq AI Intelligence
 app.include_router(
     ai.router,
     prefix="/api/ai",
     tags=["AI Intelligence"],
+)
+
+
+# Live Weather
+app.include_router(
+    weather.router,
+    prefix="/api/weather",
+    tags=["Weather"],
 )
 
 

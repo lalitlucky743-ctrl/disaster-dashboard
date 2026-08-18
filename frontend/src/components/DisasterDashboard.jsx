@@ -15,6 +15,7 @@ import {
   ChevronDown,
   ChevronRight,
   CloudRain,
+  Droplets,
   Crosshair,
   Gauge,
   Layers,
@@ -34,6 +35,7 @@ import {
   ShieldCheck,
   Thermometer,
   TrendingDown,
+  Wind,
   TrendingUp,
   User,
   Users,
@@ -57,6 +59,10 @@ import "leaflet/dist/leaflet.css";
 import { dashboardApi } from "../api/dashboardApi";
 import { aiApi } from "../api/aiApi";
 import { useAuth } from "../context/AuthContext";
+
+const API_BASE_URL =
+  import.meta.env.VITE_API_URL ||
+  "https://disaster-dashboard-9qr8.onrender.com";
 
 /* =========================================================
    CONSTANTS
@@ -1430,6 +1436,10 @@ export default function DisasterDashboard() {
   const [refreshing, setRefreshing] =
     useState(false);
 
+  const [weather, setWeather] = useState(null);
+  const [weatherLoading, setWeatherLoading] = useState(true);
+  const [weatherError, setWeatherError] = useState("");
+
   const searchRef = useRef(null);
 
   /* =====================================================
@@ -1529,6 +1539,54 @@ export default function DisasterDashboard() {
       clearInterval(interval);
     };
   }, [loadDashboard]);
+
+  /* =====================================================
+     LIVE WEATHER
+  ===================================================== */
+
+  const fetchWeather = useCallback(async () => {
+    const place = selectedPlace || DISTRICTS[0];
+    const latitude = Number(place?.lat ?? DISTRICTS[0].lat);
+    const longitude = Number(place?.lng ?? DISTRICTS[0].lng);
+
+    if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+      setWeatherError("Invalid location coordinates");
+      setWeatherLoading(false);
+      return;
+    }
+
+    try {
+      setWeatherLoading(true);
+      setWeatherError("");
+
+      const response = await fetch(
+        `${API_BASE_URL}/api/weather?latitude=${latitude}&longitude=${longitude}`
+      );
+
+      if (!response.ok) {
+        throw new Error(`Weather request failed (${response.status})`);
+      }
+
+      const data = await response.json();
+
+      setWeather(data);
+    } catch (error) {
+      console.error("Weather fetch error:", error);
+      setWeatherError("Live weather unavailable");
+    } finally {
+      setWeatherLoading(false);
+    }
+  }, [selectedPlace]);
+
+  useEffect(() => {
+    fetchWeather();
+
+    const interval = setInterval(() => {
+      fetchWeather();
+    }, 10 * 60 * 1000);
+
+    return () => clearInterval(interval);
+  }, [fetchWeather]);
 
   /* =====================================================
      SEARCH OUTSIDE CLICK
@@ -2001,29 +2059,58 @@ export default function DisasterDashboard() {
                 <div className="rounded-xl border border-slate-800 bg-slate-950/30 p-3">
                   <div className="flex items-center gap-2 text-slate-500">
                     <Thermometer className="w-3.5 h-3.5" />
-                    <span className="text-[9px]">
-                      Temperature
-                    </span>
+                    <span className="text-[9px]">Temperature</span>
                   </div>
-
                   <div className="text-xl font-bold text-slate-200 mt-2">
-                    18°C
+                    {weatherLoading ? "--" : weather?.current?.temperature != null ? `${weather.current.temperature}°C` : "--"}
                   </div>
                 </div>
 
                 <div className="rounded-xl border border-slate-800 bg-slate-950/30 p-3">
                   <div className="flex items-center gap-2 text-slate-500">
                     <CloudRain className="w-3.5 h-3.5" />
-                    <span className="text-[9px]">
-                      Rainfall
-                    </span>
+                    <span className="text-[9px]">Rainfall</span>
                   </div>
-
                   <div className="text-xl font-bold text-slate-200 mt-2">
-                    42 mm
+                    {weatherLoading ? "--" : weather?.current?.rain != null ? `${weather.current.rain} mm` : "--"}
+                  </div>
+                </div>
+
+                <div className="rounded-xl border border-slate-800 bg-slate-950/30 p-3">
+                  <div className="flex items-center gap-2 text-slate-500">
+                    <Droplets className="w-3.5 h-3.5" />
+                    <span className="text-[9px]">Humidity</span>
+                  </div>
+                  <div className="text-xl font-bold text-slate-200 mt-2">
+                    {weatherLoading ? "--" : weather?.current?.humidity != null ? `${weather.current.humidity}%` : "--"}
+                  </div>
+                </div>
+
+                <div className="rounded-xl border border-slate-800 bg-slate-950/30 p-3">
+                  <div className="flex items-center gap-2 text-slate-500">
+                    <Wind className="w-3.5 h-3.5" />
+                    <span className="text-[9px]">Wind</span>
+                  </div>
+                  <div className="text-xl font-bold text-slate-200 mt-2">
+                    {weatherLoading ? "--" : weather?.current?.wind_speed != null ? `${weather.current.wind_speed} km/h` : "--"}
                   </div>
                 </div>
               </div>
+
+              <div className="mt-3 flex items-center justify-between rounded-xl border border-slate-800 bg-slate-950/20 px-3 py-2">
+                <span className="text-[9px] text-slate-600">
+                  {selectedPlace?.name || "Almora"} • {weather?.current?.condition || (weatherLoading ? "Loading..." : "Unknown")}
+                </span>
+                <span className={`text-[8px] uppercase ${weatherError ? "text-red-400" : "text-emerald-400"}`}>
+                  {weatherError ? "OFFLINE" : "LIVE"}
+                </span>
+              </div>
+
+              {weatherError && (
+                <div className="mt-2 text-[9px] text-red-400">
+                  {weatherError}
+                </div>
+              )}
 
               <button
                 type="button"
