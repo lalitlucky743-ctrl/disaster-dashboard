@@ -15,7 +15,6 @@ import {
   ChevronDown,
   ChevronRight,
   CloudRain,
-  Droplets,
   Crosshair,
   Gauge,
   Layers,
@@ -35,7 +34,6 @@ import {
   ShieldCheck,
   Thermometer,
   TrendingDown,
-  Wind,
   TrendingUp,
   User,
   Users,
@@ -60,10 +58,6 @@ import { dashboardApi } from "../api/dashboardApi";
 import { aiApi } from "../api/aiApi";
 import { useAuth } from "../context/AuthContext";
 
-const API_BASE_URL =
-  import.meta.env.VITE_API_URL ||
-  "https://disaster-dashboard-9qr8.onrender.com";
-
 /* =========================================================
    CONSTANTS
 ========================================================= */
@@ -71,6 +65,11 @@ const API_BASE_URL =
 const UTTARAKHAND_CENTER = [30.0668, 79.0193];
 
 const DEFAULT_ZOOM = 7;
+
+// Backend API used for live weather data.
+const API_BASE_URL =
+  import.meta.env.VITE_API_URL ||
+  "https://disaster-dashboard-9qr8.onrender.com";
 
 const TAB_CONFIG = [
   {
@@ -377,6 +376,83 @@ function normalizeRisk(value) {
 
 function getRiskConfig(value) {
   return RISK_CONFIG[normalizeRisk(value)];
+}
+
+/* =========================================================
+   WEATHER RISK
+   Temperature is the primary signal. Rainfall and wind are
+   used as secondary weather-stress signals.
+========================================================= */
+
+function getWeatherRisk(weather) {
+  const current = weather?.current || weather || {};
+
+  const temperature = Number(current.temperature);
+  const rain = Number(current.rain ?? current.precipitation ?? 0);
+  const wind = Number(current.wind_speed ?? 0);
+
+  if (!Number.isFinite(temperature)) {
+    return "MEDIUM";
+  }
+
+  // Temperature is the main driver.
+  let score = 0;
+
+  if (temperature <= 25) score += 10;
+  else if (temperature <= 30) score += 30;
+  else if (temperature <= 35) score += 55;
+  else if (temperature <= 40) score += 75;
+  else score += 95;
+
+  // Secondary weather stress.
+  if (rain >= 10) score += 15;
+  else if (rain >= 5) score += 8;
+  else if (rain > 0) score += 3;
+
+  if (wind >= 40) score += 15;
+  else if (wind >= 25) score += 8;
+  else if (wind >= 15) score += 3;
+
+  if (score >= 85) return "CRITICAL";
+  if (score >= 60) return "HIGH";
+  if (score >= 30) return "MEDIUM";
+  return "LOW";
+}
+
+function applyWeatherRisk(districts, weatherByDistrict) {
+  return districts.map((district) => {
+    const weather = weatherByDistrict[district.id];
+    const risk = weather
+      ? getWeatherRisk(weather)
+      : district.risk;
+
+    const config = getRiskConfig(risk);
+
+    return {
+      ...district,
+      weatherRisk: risk,
+      weatherData: weather || null,
+      risk,
+      // Keep the original backend score when weather is unavailable.
+      score: weather
+        ? Math.round(
+            risk === "CRITICAL"
+              ? 90
+              : risk === "HIGH"
+              ? 75
+              : risk === "MEDIUM"
+              ? 50
+              : 20
+          )
+        : district.score,
+      locations: (district.locations || []).map((location) => ({
+        ...location,
+        risk,
+        weatherRisk: risk,
+      })),
+      weatherConfig: config,
+    };
+  });
 }
 
 function formatRelativeTime(value) {
@@ -1380,6 +1456,15 @@ export default function DisasterDashboard() {
   const [districts, setDistricts] =
     useState(DISTRICTS);
 
+  const [weatherByDistrict, setWeatherByDistrict] =
+    useState({});
+
+  const [weatherLoading, setWeatherLoading] =
+    useState(true);
+
+  const [weatherError, setWeatherError] =
+    useState("");
+
   const [alerts, setAlerts] = useState([]);
 
   const [overview, setOverview] = useState(null);
@@ -1436,11 +1521,66 @@ export default function DisasterDashboard() {
   const [refreshing, setRefreshing] =
     useState(false);
 
-  const [weather, setWeather] = useState(null);
-  const [weatherLoading, setWeatherLoading] = useState(true);
-  const [weatherError, setWeatherError] = useState("");
-
   const searchRef = useRef(null);
+
+  /* =====================================================
+     LIVE WEATHER + DYNAMIC MAP RISK
+  ===================================================== */
+
+  const loadWeather = useCallback(async (districtList) => {
+    if (!Array.isArray(districtList) || districtList.length === 0) {
+      return;
+    }
+
+    try {
+      setWeatherLoading(true);
+      setWeatherError("");
+
+      const results = await Promise.allSettled(
+        districtList.map(async (district) => {
+          const response = await fetch(
+            `${API_BASE_URL}/api/weather?latitude=${encodeURIComponent(
+              district.lat
+            )}&longitude=${encodeURIComponent(district.lng)}`
+          );
+
+          if (!response.ok) {
+            throw new Error(
+              `Weather request failed for ${district.name}`
+            );
+          }
+
+          return {
+            id: district.id,
+            data: await response.json(),
+          };
+        })
+      );
+
+      const nextWeather = {};
+
+      results.forEach((result) => {
+        if (result.status === "fulfilled") {
+          nextWeather[result.value.id] = result.value.data;
+        }
+      });
+
+      setWeatherByDistrict(nextWeather);
+
+      if (Object.keys(nextWeather).length === 0) {
+        setWeatherError(
+          "Live weather service unavailable. Using existing risk data."
+        );
+      }
+    } catch (error) {
+      console.error("Weather synchronization error:", error);
+      setWeatherError(
+        "Live weather service unavailable. Using existing risk data."
+      );
+    } finally {
+      setWeatherLoading(false);
+    }
+  }, []);
 
   /* =====================================================
      LOAD DASHBOARD
@@ -1487,18 +1627,21 @@ export default function DisasterDashboard() {
           setAlerts(normalizeAlerts(null));
         }
 
+        let normalizedDistricts;
+
         if (
           districtsResult.status ===
           "fulfilled"
         ) {
-          setDistricts(
-            normalizeDistricts(
-              districtsResult.value
-            )
+          normalizedDistricts = normalizeDistricts(
+            districtsResult.value
           );
         } else {
-          setDistricts(DISTRICTS);
+          normalizedDistricts = DISTRICTS;
         }
+
+        setDistricts(normalizedDistricts);
+        loadWeather(normalizedDistricts);
 
         const everythingFailed =
           overviewResult.status ===
@@ -1525,7 +1668,7 @@ export default function DisasterDashboard() {
         setRefreshing(false);
       }
     },
-    []
+    [loadWeather]
   );
 
   useEffect(() => {
@@ -1540,53 +1683,18 @@ export default function DisasterDashboard() {
     };
   }, [loadDashboard]);
 
-  /* =====================================================
-     LIVE WEATHER
-  ===================================================== */
-
-  const fetchWeather = useCallback(async () => {
-    const place = selectedPlace || DISTRICTS[0];
-    const latitude = Number(place?.lat ?? DISTRICTS[0].lat);
-    const longitude = Number(place?.lng ?? DISTRICTS[0].lng);
-
-    if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
-      setWeatherError("Invalid location coordinates");
-      setWeatherLoading(false);
+  useEffect(() => {
+    if (Object.keys(weatherByDistrict).length === 0) {
       return;
     }
 
-    try {
-      setWeatherLoading(true);
-      setWeatherError("");
-
-      const response = await fetch(
-        `${API_BASE_URL}/api/weather?latitude=${latitude}&longitude=${longitude}`
-      );
-
-      if (!response.ok) {
-        throw new Error(`Weather request failed (${response.status})`);
-      }
-
-      const data = await response.json();
-
-      setWeather(data);
-    } catch (error) {
-      console.error("Weather fetch error:", error);
-      setWeatherError("Live weather unavailable");
-    } finally {
-      setWeatherLoading(false);
-    }
-  }, [selectedPlace]);
-
-  useEffect(() => {
-    fetchWeather();
-
-    const interval = setInterval(() => {
-      fetchWeather();
-    }, 10 * 60 * 1000);
-
-    return () => clearInterval(interval);
-  }, [fetchWeather]);
+    setDistricts((currentDistricts) =>
+      applyWeatherRisk(
+        currentDistricts,
+        weatherByDistrict
+      )
+    );
+  }, [weatherByDistrict]);
 
   /* =====================================================
      SEARCH OUTSIDE CLICK
@@ -2055,62 +2163,109 @@ export default function DisasterDashboard() {
                 }
               />
 
-              <div className="grid grid-cols-2 gap-3">
-                <div className="rounded-xl border border-slate-800 bg-slate-950/30 p-3">
-                  <div className="flex items-center gap-2 text-slate-500">
-                    <Thermometer className="w-3.5 h-3.5" />
-                    <span className="text-[9px]">Temperature</span>
-                  </div>
-                  <div className="text-xl font-bold text-slate-200 mt-2">
-                    {weatherLoading ? "--" : weather?.current?.temperature != null ? `${weather.current.temperature}°C` : "--"}
-                  </div>
-                </div>
+              {(() => {
+                const weatherDistrict =
+                  selectedPlace?.type === "District"
+                    ? districts.find(
+                        (district) =>
+                          district.id === selectedPlace.id
+                      )
+                    : districts[0];
 
-                <div className="rounded-xl border border-slate-800 bg-slate-950/30 p-3">
-                  <div className="flex items-center gap-2 text-slate-500">
-                    <CloudRain className="w-3.5 h-3.5" />
-                    <span className="text-[9px]">Rainfall</span>
-                  </div>
-                  <div className="text-xl font-bold text-slate-200 mt-2">
-                    {weatherLoading ? "--" : weather?.current?.rain != null ? `${weather.current.rain} mm` : "--"}
-                  </div>
-                </div>
+                const weather =
+                  weatherDistrict &&
+                  weatherByDistrict[weatherDistrict.id];
 
-                <div className="rounded-xl border border-slate-800 bg-slate-950/30 p-3">
-                  <div className="flex items-center gap-2 text-slate-500">
-                    <Droplets className="w-3.5 h-3.5" />
-                    <span className="text-[9px]">Humidity</span>
-                  </div>
-                  <div className="text-xl font-bold text-slate-200 mt-2">
-                    {weatherLoading ? "--" : weather?.current?.humidity != null ? `${weather.current.humidity}%` : "--"}
-                  </div>
-                </div>
+                const current = weather?.current || {};
+                const weatherRisk = weather
+                  ? getWeatherRisk(weather)
+                  : weatherDistrict?.risk || "MEDIUM";
+                const weatherConfig =
+                  getRiskConfig(weatherRisk);
 
-                <div className="rounded-xl border border-slate-800 bg-slate-950/30 p-3">
-                  <div className="flex items-center gap-2 text-slate-500">
-                    <Wind className="w-3.5 h-3.5" />
-                    <span className="text-[9px]">Wind</span>
-                  </div>
-                  <div className="text-xl font-bold text-slate-200 mt-2">
-                    {weatherLoading ? "--" : weather?.current?.wind_speed != null ? `${weather.current.wind_speed} km/h` : "--"}
-                  </div>
-                </div>
-              </div>
+                return (
+                  <>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="rounded-xl border border-slate-800 bg-slate-950/30 p-3">
+                        <div className="flex items-center gap-2 text-slate-500">
+                          <Thermometer className="w-3.5 h-3.5" />
+                          <span className="text-[9px]">
+                            Temperature
+                          </span>
+                        </div>
+                        <div className="text-xl font-bold text-slate-200 mt-2">
+                          {current.temperature != null
+                            ? `${current.temperature}°C`
+                            : "--"}
+                        </div>
+                      </div>
 
-              <div className="mt-3 flex items-center justify-between rounded-xl border border-slate-800 bg-slate-950/20 px-3 py-2">
-                <span className="text-[9px] text-slate-600">
-                  {selectedPlace?.name || "Almora"} • {weather?.current?.condition || (weatherLoading ? "Loading..." : "Unknown")}
-                </span>
-                <span className={`text-[8px] uppercase ${weatherError ? "text-red-400" : "text-emerald-400"}`}>
-                  {weatherError ? "OFFLINE" : "LIVE"}
-                </span>
-              </div>
+                      <div className="rounded-xl border border-slate-800 bg-slate-950/30 p-3">
+                        <div className="flex items-center gap-2 text-slate-500">
+                          <CloudRain className="w-3.5 h-3.5" />
+                          <span className="text-[9px]">
+                            Rainfall
+                          </span>
+                        </div>
+                        <div className="text-xl font-bold text-slate-200 mt-2">
+                          {current.rain != null
+                            ? `${current.rain} mm`
+                            : current.precipitation != null
+                            ? `${current.precipitation} mm`
+                            : "--"}
+                        </div>
+                      </div>
 
-              {weatherError && (
-                <div className="mt-2 text-[9px] text-red-400">
-                  {weatherError}
-                </div>
-              )}
+                      <div className="rounded-xl border border-slate-800 bg-slate-950/30 p-3">
+                        <div className="text-[9px] text-slate-500">
+                          Humidity
+                        </div>
+                        <div className="text-xl font-bold text-slate-200 mt-2">
+                          {current.humidity != null
+                            ? `${current.humidity}%`
+                            : "--"}
+                        </div>
+                      </div>
+
+                      <div className="rounded-xl border border-slate-800 bg-slate-950/30 p-3">
+                        <div className="text-[9px] text-slate-500">
+                          Wind
+                        </div>
+                        <div className="text-xl font-bold text-slate-200 mt-2">
+                          {current.wind_speed != null
+                            ? `${current.wind_speed} km/h`
+                            : "--"}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="mt-3 flex items-center justify-between rounded-xl border border-slate-800 bg-slate-950/30 px-3 py-2">
+                      <span className="text-[9px] text-slate-500">
+                        {weatherDistrict?.name || "Uttarakhand"}
+                        {current.condition
+                          ? ` • ${current.condition}`
+                          : " • Weather unavailable"}
+                      </span>
+                      <span
+                        className="text-[9px] font-bold uppercase"
+                        style={{ color: weatherConfig.color }}
+                      >
+                        {weatherLoading
+                          ? "SYNCING"
+                          : weather
+                          ? "LIVE"
+                          : "OFFLINE"}
+                      </span>
+                    </div>
+
+                    {weatherError && (
+                      <div className="mt-2 text-[9px] text-red-400">
+                        {weatherError}
+                      </div>
+                    )}
+                  </>
+                );
+              })()}
 
               <button
                 type="button"
@@ -2130,8 +2285,32 @@ export default function DisasterDashboard() {
                 </div>
 
                 <div className="text-xs text-slate-300 mt-1">
-                  Elevated precipitation may increase
-                  slope instability.
+                  {(() => {
+                    const weatherDistrict =
+                      selectedPlace?.type === "District"
+                        ? districts.find(
+                            (district) =>
+                              district.id === selectedPlace.id
+                          )
+                        : districts[0];
+                    const weather = weatherDistrict
+                      ? weatherByDistrict[weatherDistrict.id]
+                      : null;
+                    const risk = weather
+                      ? getWeatherRisk(weather)
+                      : weatherDistrict?.risk || "MEDIUM";
+
+                    if (risk === "CRITICAL") {
+                      return "Extreme weather stress detected. Immediate monitoring recommended.";
+                    }
+                    if (risk === "HIGH") {
+                      return "High weather stress detected. Increased monitoring is recommended.";
+                    }
+                    if (risk === "MEDIUM") {
+                      return "Moderate weather stress detected. Continue regional monitoring.";
+                    }
+                    return "Current weather conditions are within the lower-risk monitoring range.";
+                  })()}
                 </div>
               </button>
             </section>
