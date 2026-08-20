@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 from pydantic import BaseModel
-from ...ml.predictor import predict_risk
+from ..ml.predictor import predict_risk
 router = APIRouter()
 
 
