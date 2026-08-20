@@ -2,7 +2,7 @@ import httpx
 
 from fastapi import APIRouter, HTTPException, Query
 
-from ...ml.predictor import predict_risk
+from ..ml.predictor import predict_risk
 
 
 router = APIRouter()
