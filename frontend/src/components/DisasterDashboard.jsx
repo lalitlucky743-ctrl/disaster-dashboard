@@ -70,6 +70,7 @@ const DEFAULT_ZOOM = 7;
 const API_BASE_URL =
   import.meta.env.VITE_API_URL ||
   "https://disaster-dashboard-9qr8.onrender.com";
+  
 
 const TAB_CONFIG = [
   {
@@ -1602,169 +1603,313 @@ export default function DisasterDashboard() {
   ===================================================== */
 
   const loadWeather = useCallback(async (districtList) => {
-  if (
-    !Array.isArray(districtList) ||
-    districtList.length === 0
-  ) {
-    return;
-  }
+    if (!Array.isArray(districtList) || districtList.length === 0) {
+      return;
+    }
 
-  try {
     setWeatherLoading(true);
     setWeatherError("");
 
-    const results = await Promise.allSettled(
-      districtList.map(async (district) => {
-        // -----------------------------------------
-        // STEP 1: Get live weather
-        // -----------------------------------------
+    try {
+      /*
+       * IMPORTANT:
+       * Pehle code har district ke liye alag Open-Meteo request kar raha tha.
+       * 13 districts => 13 weather requests + 13 ML requests ek saath.
+       *
+       * Ab:
+       * - Open-Meteo ko ek batched request milegi.
+       * - ML requests limited concurrency mein jayengi.
+       */
 
-        const weatherResponse = await fetch(
-          `${API_BASE_URL}/api/weather?latitude=${encodeURIComponent(
-            district.lat
-          )}&longitude=${encodeURIComponent(
-            district.lng
-          )}`
+      const validDistricts = districtList.filter(
+        (d) =>
+          Number.isFinite(Number(d.lat)) &&
+          Number.isFinite(Number(d.lng))
+      );
+
+      if (validDistricts.length === 0) {
+        throw new Error("No valid district coordinates found.");
+      }
+
+      // --------------------------------------------------
+      // STEP 1: ONE Open-Meteo request for all districts
+      // --------------------------------------------------
+      const latitudes = validDistricts
+        .map((d) => Number(d.lat).toFixed(4))
+        .join(",");
+
+      const longitudes = validDistricts
+        .map((d) => Number(d.lng).toFixed(4))
+        .join(",");
+
+      const weatherUrl =
+        `https://api.open-meteo.com/v1/forecast` +
+        `?latitude=${encodeURIComponent(latitudes)}` +
+        `&longitude=${encodeURIComponent(longitudes)}` +
+        `&current=temperature_2m,relative_humidity_2m,precipitation,rain,weather_code,wind_speed_10m` +
+        `&timezone=auto`;
+
+      const weatherResponse = await fetch(weatherUrl);
+
+      if (!weatherResponse.ok) {
+        throw new Error(
+          `Open-Meteo request failed: ${weatherResponse.status}`
         );
+      }
 
-        if (!weatherResponse.ok) {
-          throw new Error(
-            `Weather request failed for ${district.name}`
-          );
+      const weatherPayload = await weatherResponse.json();
+
+      /*
+       * Open-Meteo returns:
+       * - an array when multiple coordinates are supplied
+       * - an object for a single coordinate
+       */
+      const weatherItems = Array.isArray(weatherPayload)
+        ? weatherPayload
+        : [weatherPayload];
+
+      const weatherByDistrictId = {};
+
+      validDistricts.forEach((district, index) => {
+        const item = weatherItems[index];
+
+        if (!item) return;
+
+        const current = item.current || {};
+
+        weatherByDistrictId[district.id] = {
+          current: {
+            temperature: Number(
+              current.temperature_2m ?? 0
+            ),
+            humidity: Number(
+              current.relative_humidity_2m ?? 0
+            ),
+            precipitation: Number(
+              current.precipitation ?? 0
+            ),
+            rain: Number(
+              current.rain ?? 0
+            ),
+            weather_code: Number(
+              current.weather_code ?? 0
+            ),
+            wind_speed: Number(
+              current.wind_speed_10m ?? 0
+            ),
+          },
+
+          latitude: item.latitude,
+          longitude: item.longitude,
+          timezone: item.timezone,
+          fetched_at: new Date().toISOString(),
+        };
+      });
+
+      // --------------------------------------------------
+      // STEP 2: ML helper
+      // --------------------------------------------------
+      const predictForDistrict = async (district) => {
+        const weatherData =
+          weatherByDistrictId[district.id];
+
+        if (!weatherData) {
+          return null;
         }
 
-        const weatherData =
-          await weatherResponse.json();
-
         const current =
-          weatherData?.current ||
-          weatherData ||
-          {};
+          weatherData.current || {};
 
-        // -----------------------------------------
-        // STEP 2: Prepare ML input
-        // -----------------------------------------
-
-        const rainfall = Number(
-          current.rain ??
-            current.precipitation ??
-            0
-        );
+        /*
+         * EXACT ML INPUT from your FastAPI:
+         *
+         * temperature
+         * humidity
+         * precipitation
+         * rain
+         * weather_code
+         */
 
         const temperature = Number(
-          current.temperature ?? 0
+          current.temperature
         );
 
         const humidity = Number(
-          current.humidity ?? 0
+          current.humidity
         );
 
-        /*
-          River level अभी weather API से नहीं आ रहा,
-          इसलिए फिलहाल 0 भेज रहे हैं.
-
-          Baad mein real river-level API connect
-          kar sakte hain.
-        */
-        const river_level = Number(
-          current.river_level ?? 0
+        const precipitation = Number(
+          current.precipitation
         );
 
-        /*
-          Previous incidents backend/database se
-          aayenge to yahan replace kar dena.
-
-          फिलहाल district alerts ko proxy ki tarah
-          use kar rahe hain.
-        */
-        const previous_incidents = Number(
-          district.alerts ?? 0
+        const rain = Number(
+          current.rain
         );
 
-        // -----------------------------------------
-        // STEP 3: Call ML model
-        // -----------------------------------------
+        const weather_code = Number(
+          current.weather_code
+        );
+
+        if (
+          !Number.isFinite(temperature) ||
+          !Number.isFinite(humidity) ||
+          !Number.isFinite(precipitation) ||
+          !Number.isFinite(rain) ||
+          !Number.isFinite(weather_code)
+        ) {
+          throw new Error(
+            `Invalid ML inputs for ${district.name}`
+          );
+        }
 
         const mlResponse = await fetch(
           `${API_BASE_URL}/predict-risk`,
           {
             method: "POST",
             headers: {
-              "Content-Type":
-                "application/json",
+              "Content-Type": "application/json",
             },
             body: JSON.stringify({
-              rainfall,
               temperature,
               humidity,
-              river_level,
-              previous_incidents,
+              precipitation,
+              rain,
+              weather_code,
             }),
           }
         );
 
         if (!mlResponse.ok) {
+          const errorText =
+            await mlResponse.text();
+
           throw new Error(
-            `ML prediction failed for ${district.name}`
+            `ML prediction failed for ${district.name}: ${errorText}`
           );
         }
 
         const mlPrediction =
           await mlResponse.json();
 
-        // -----------------------------------------
-        // STEP 4: Return combined intelligence
-        // -----------------------------------------
-
         return {
           id: district.id,
-
           weather: weatherData,
-
           ml: mlPrediction,
 
           inputs: {
-            rainfall,
             temperature,
             humidity,
-            river_level,
-            previous_incidents,
+            precipitation,
+            rain,
+            weather_code,
           },
         };
-      })
-    );
+      };
 
-    const nextWeather = {};
+      // --------------------------------------------------
+      // STEP 3: Controlled concurrency
+      // --------------------------------------------------
+      //
+      // Ek saath saare ML requests mat bhejo.
+      // MAX_CONCURRENT = 3
+      //
+      const MAX_CONCURRENT = 3;
+      const results = [];
+      let nextIndex = 0;
 
-    results.forEach((result) => {
-      if (result.status === "fulfilled") {
-        nextWeather[result.value.id] =
-          result.value;
-      }
-    });
+      const worker = async () => {
+        while (true) {
+          const index = nextIndex++;
 
-    setWeatherByDistrict(nextWeather);
+          if (index >= validDistricts.length) {
+            return;
+          }
 
-    if (
-      Object.keys(nextWeather).length === 0
-    ) {
-      setWeatherError(
-        "Live weather/ML service unavailable. Using existing risk data."
+          const district = validDistricts[index];
+
+          try {
+            const result =
+              await predictForDistrict(district);
+
+            if (result) {
+              results.push({
+                ok: true,
+                value: result,
+              });
+            }
+          } catch (error) {
+            console.error(
+              `Weather/ML failed for ${district.name}:`,
+              error
+            );
+
+            results.push({
+              ok: false,
+              id: district.id,
+              name: district.name,
+              error: error?.message || "Unknown error",
+            });
+          }
+        }
+      };
+
+      await Promise.all(
+        Array.from(
+          {
+            length: Math.min(
+              MAX_CONCURRENT,
+              validDistricts.length
+            ),
+          },
+          () => worker()
+        )
       );
-    }
-  } catch (error) {
-    console.error(
-      "Weather + ML synchronization error:",
-      error
-    );
 
-    setWeatherError(
-      "Live weather or ML service unavailable. Using existing risk data."
-    );
-  } finally {
-    setWeatherLoading(false);
-  }
-}, []);
+      // --------------------------------------------------
+      // STEP 4: Save successful results
+      // --------------------------------------------------
+      const nextWeather = {};
+
+      results.forEach((result) => {
+        if (result.ok && result.value) {
+          nextWeather[result.value.id] =
+            result.value;
+        }
+      });
+
+      setWeatherByDistrict(nextWeather);
+
+      const failedCount =
+        validDistricts.length -
+        Object.keys(nextWeather).length;
+
+      if (
+        Object.keys(nextWeather).length === 0
+      ) {
+        setWeatherError(
+          "Live weather/ML service unavailable. Existing district risk is being shown."
+        );
+      } else if (failedCount > 0) {
+        setWeatherError(
+          `${failedCount} district(s) could not be synchronized. Other districts are live.`
+        );
+      } else {
+        setWeatherError("");
+      }
+    } catch (error) {
+      console.error(
+        "Weather + ML synchronization error:",
+        error
+      );
+
+      setWeatherError(
+        "Open-Meteo live weather could not be loaded. Existing district risk is being shown."
+      );
+    } finally {
+      setWeatherLoading(false);
+    }
+  }, []);
+
   /* =====================================================
      LOAD DASHBOARD
   ===================================================== */
@@ -1867,19 +2012,19 @@ export default function DisasterDashboard() {
   }, [loadDashboard]);
 
   useEffect(() => {
-  if (
-    Object.keys(weatherByDistrict).length === 0
-  ) {
-    return;
-  }
+    if (
+      Object.keys(weatherByDistrict).length === 0
+    ) {
+      return;
+    }
 
-  setDistricts((currentDistricts) =>
-    applyMLRisk(
-      currentDistricts,
-      weatherByDistrict
-    )
-  );
-}, [weatherByDistrict]);
+    setDistricts((currentDistricts) =>
+      applyMLRisk(
+        currentDistricts,
+        weatherByDistrict
+      )
+    );
+  }, [weatherByDistrict]);
 
   /* =====================================================
      SEARCH OUTSIDE CLICK
