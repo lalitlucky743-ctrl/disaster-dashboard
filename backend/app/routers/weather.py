@@ -2,6 +2,8 @@ import httpx
 
 from fastapi import APIRouter, HTTPException, Query
 
+from ...ml.predictor import predict_risk
+
 
 router = APIRouter()
 
@@ -75,14 +77,14 @@ async def get_weather(
     ),
 ):
     """
-    Fetch live weather data from Open-Meteo.
+    Fetch live weather data from Open-Meteo
+    and generate ML-based disaster risk.
     """
 
     params = {
         "latitude": latitude,
         "longitude": longitude,
 
-        # Current weather
         "current": (
             "temperature_2m,"
             "relative_humidity_2m,"
@@ -95,7 +97,6 @@ async def get_weather(
             "surface_pressure"
         ),
 
-        # Today's forecast
         "hourly": (
             "temperature_2m,"
             "precipitation_probability,"
@@ -109,8 +110,16 @@ async def get_weather(
         "timezone": "auto",
     }
 
+
+    # -----------------------------------------
+    # Fetch live weather
+    # -----------------------------------------
+
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+
+        async with httpx.AsyncClient(
+            timeout=10.0
+        ) as client:
 
             response = await client.get(
                 OPEN_METEO_URL,
@@ -121,32 +130,99 @@ async def get_weather(
 
             data = response.json()
 
+
     except httpx.TimeoutException:
+
         raise HTTPException(
             status_code=504,
             detail="Weather service timed out"
         )
 
+
     except httpx.HTTPError as error:
+
         raise HTTPException(
             status_code=502,
             detail=f"Weather service error: {str(error)}"
         )
 
+
     except Exception as error:
+
         raise HTTPException(
             status_code=500,
             detail=f"Failed to fetch weather: {str(error)}"
         )
 
-    current = data.get("current", {})
+
+    current = data.get(
+        "current",
+        {}
+    )
+
+
+    # -----------------------------------------
+    # Extract current weather
+    # -----------------------------------------
+
+    temperature = current.get(
+        "temperature_2m",
+        0
+    )
+
+    humidity = current.get(
+        "relative_humidity_2m",
+        0
+    )
+
+    precipitation = current.get(
+        "precipitation",
+        0
+    )
+
+    rain = current.get(
+        "rain",
+        0
+    )
 
     weather_code = current.get(
         "weather_code",
         0
     )
 
+
+    # -----------------------------------------
+    # ML DISASTER RISK PREDICTION
+    # -----------------------------------------
+
+    try:
+
+        risk_prediction = predict_risk(
+            temperature=float(temperature or 0),
+            humidity=float(humidity or 0),
+            precipitation=float(
+                precipitation or 0
+            ),
+            rain=float(rain or 0),
+            weather_code=int(
+                weather_code or 0
+            ),
+        )
+
+    except Exception as error:
+
+        raise HTTPException(
+            status_code=500,
+            detail=f"ML prediction failed: {str(error)}"
+        )
+
+
+    # -----------------------------------------
+    # Weather response + ML prediction
+    # -----------------------------------------
+
     return {
+
         "status": "success",
 
         "location": {
@@ -156,9 +232,8 @@ async def get_weather(
         },
 
         "current": {
-            "temperature": current.get(
-                "temperature_2m"
-            ),
+
+            "temperature": temperature,
 
             "temperature_unit": "°C",
 
@@ -166,17 +241,11 @@ async def get_weather(
                 "apparent_temperature"
             ),
 
-            "humidity": current.get(
-                "relative_humidity_2m"
-            ),
+            "humidity": humidity,
 
-            "precipitation": current.get(
-                "precipitation"
-            ),
+            "precipitation": precipitation,
 
-            "rain": current.get(
-                "rain"
-            ),
+            "rain": rain,
 
             "wind_speed": current.get(
                 "wind_speed_10m"
@@ -195,6 +264,29 @@ async def get_weather(
             "condition": get_weather_description(
                 weather_code
             ),
+        },
+
+        # -------------------------------------
+        # ML Prediction
+        # -------------------------------------
+
+        "disaster_risk": {
+
+            "risk_level": risk_prediction[
+                "risk_level"
+            ],
+
+            "risk_score": risk_prediction[
+                "risk_score"
+            ],
+
+            "confidence": risk_prediction[
+                "confidence"
+            ],
+
+            "model": "Random Forest",
+
+            "source": "Live Open-Meteo Weather Data",
         },
 
         "source": "Open-Meteo",

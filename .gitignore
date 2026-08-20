@@ -10,3 +10,9 @@ dist/
 
 .venv/
 venv/
+# Local database
+disaster.db
+backend/disaster.db
+
+# ML generated model
+backend/ml/disaster_model.pkl

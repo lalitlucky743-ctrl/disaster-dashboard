@@ -6,8 +6,10 @@ from .routers import auth
 from .routers import dashboard
 from .routers import ai
 from .routers import weather
+from .routers import ml
 
 
+# Create database tables
 Base.metadata.create_all(bind=engine)
 
 
@@ -16,6 +18,10 @@ app = FastAPI(
     version="1.0.0",
 )
 
+
+# --------------------------------------------------
+# CORS
+# --------------------------------------------------
 
 app.add_middleware(
     CORSMiddleware,
@@ -32,7 +38,10 @@ app.add_middleware(
 )
 
 
+# --------------------------------------------------
 # Authentication
+# --------------------------------------------------
+
 app.include_router(
     auth.router,
     prefix="/api/auth",
@@ -40,7 +49,10 @@ app.include_router(
 )
 
 
+# --------------------------------------------------
 # Dashboard
+# --------------------------------------------------
+
 app.include_router(
     dashboard.router,
     prefix="/api/dashboard",
@@ -48,7 +60,10 @@ app.include_router(
 )
 
 
+# --------------------------------------------------
 # Groq AI Intelligence
+# --------------------------------------------------
+
 app.include_router(
     ai.router,
     prefix="/api/ai",
@@ -56,13 +71,31 @@ app.include_router(
 )
 
 
+# --------------------------------------------------
 # Live Weather
+# --------------------------------------------------
+
 app.include_router(
     weather.router,
     prefix="/api/weather",
-    tags=["Weather"],
+    tags=["Live Weather"],
 )
 
+
+# --------------------------------------------------
+# ML Disaster Risk Prediction
+# --------------------------------------------------
+
+app.include_router(
+    ml.router,
+    prefix="/api/ml",
+    tags=["ML Disaster Prediction"],
+)
+
+
+# --------------------------------------------------
+# Root
+# --------------------------------------------------
 
 @app.get("/")
 def root():
@@ -71,6 +104,10 @@ def root():
         "service": "Disaster Intelligence Platform",
     }
 
+
+# --------------------------------------------------
+# Health Check
+# --------------------------------------------------
 
 @app.get("/health")
 def health():
