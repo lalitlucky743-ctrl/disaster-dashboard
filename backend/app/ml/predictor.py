@@ -8,7 +8,6 @@ MODEL_PATH = os.path.join(
     "disaster_model.pkl",
 )
 
-
 model = joblib.load(MODEL_PATH)
 
 
@@ -28,13 +27,15 @@ def predict_risk(
         weather_code,
     ]])
 
+    # ML model prediction
     prediction = model.predict(features)[0]
 
+    # ML model probability
     probabilities = model.predict_proba(features)[0]
 
     confidence = float(max(probabilities))
 
-
+    # Convert ML class into risk level
     if prediction == 2:
         risk_level = "HIGH"
 
@@ -44,13 +45,12 @@ def predict_risk(
     else:
         risk_level = "LOW"
 
-
-    # Convert model confidence to percentage
+    # Model confidence as risk score
     risk_score = round(confidence * 100)
-
 
     return {
         "risk_level": risk_level,
         "risk_score": risk_score,
         "confidence": round(confidence, 2),
+        "prediction": int(prediction),
     }

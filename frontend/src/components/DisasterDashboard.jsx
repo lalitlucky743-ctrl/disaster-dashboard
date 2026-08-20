@@ -383,19 +383,29 @@ function getRiskConfig(value) {
    Temperature is the primary signal. Rainfall and wind are
    used as secondary weather-stress signals.
 ========================================================= */
-
 function getWeatherRisk(weather) {
   const current = weather?.current || weather || {};
 
+  // ML backend ka prediction agar available hai
+  if (weather?.ml_prediction) {
+    return normalizeRisk(
+      weather.ml_prediction.risk_level ||
+        weather.ml_prediction.risk ||
+        weather.ml_prediction.prediction
+    );
+  }
+
+  // Fallback: agar ML response available nahi hai
   const temperature = Number(current.temperature);
-  const rain = Number(current.rain ?? current.precipitation ?? 0);
+  const rain = Number(
+    current.rain ?? current.precipitation ?? 0
+  );
   const wind = Number(current.wind_speed ?? 0);
 
   if (!Number.isFinite(temperature)) {
     return "MEDIUM";
   }
 
-  // Temperature is the main driver.
   let score = 0;
 
   if (temperature <= 25) score += 10;
@@ -404,7 +414,6 @@ function getWeatherRisk(weather) {
   else if (temperature <= 40) score += 75;
   else score += 95;
 
-  // Secondary weather stress.
   if (rain >= 10) score += 15;
   else if (rain >= 5) score += 8;
   else if (rain > 0) score += 3;
@@ -416,41 +425,106 @@ function getWeatherRisk(weather) {
   if (score >= 85) return "CRITICAL";
   if (score >= 60) return "HIGH";
   if (score >= 30) return "MEDIUM";
+
   return "LOW";
 }
-
-function applyWeatherRisk(districts, weatherByDistrict) {
+function applyMLRisk(districts, intelligenceByDistrict) {
   return districts.map((district) => {
-    const weather = weatherByDistrict[district.id];
-    const risk = weather
-      ? getWeatherRisk(weather)
-      : district.risk;
+    const intelligence =
+      intelligenceByDistrict[district.id];
 
-    const config = getRiskConfig(risk);
+    if (!intelligence) {
+      return {
+        ...district,
+        weatherRisk: district.risk,
+        mlPrediction: null,
+        weatherData: null,
+      };
+    }
+
+    const weather =
+      intelligence.weather || {};
+
+    const ml =
+      intelligence.ml || {};
+
+    /*
+      ML backend ke response mein agar
+      risk / risk_level / prediction hai,
+      usko normalize karenge.
+    */
+
+    const rawRisk =
+      ml.risk_level ??
+      ml.risk ??
+      ml.prediction ??
+      ml.label ??
+      district.risk;
+
+    const risk = normalizeRisk(rawRisk);
+
+    /*
+      ML score agar backend return karta hai.
+    */
+
+    const rawScore =
+      ml.risk_score ??
+      ml.score ??
+      ml.probability ??
+      district.score;
+
+    let score = Number(rawScore);
+
+    /*
+      Agar ML score nahi mila to
+      existing score preserve hoga.
+    */
+
+    if (!Number.isFinite(score)) {
+      score = Number(district.score) || 0;
+    }
+
+    const config =
+      getRiskConfig(risk);
 
     return {
       ...district,
-      weatherRisk: risk,
-      weatherData: weather || null,
+
+      // -------------------------
+      // ML OUTPUT
+      // -------------------------
+
       risk,
-      // Keep the original backend score when weather is unavailable.
-      score: weather
-        ? Math.round(
-            risk === "CRITICAL"
-              ? 90
-              : risk === "HIGH"
-              ? 75
-              : risk === "MEDIUM"
-              ? 50
-              : 20
-          )
-        : district.score,
-      locations: (district.locations || []).map((location) => ({
-        ...location,
-        risk,
-        weatherRisk: risk,
-      })),
+
+      score: Math.round(score),
+
+      mlPrediction: ml,
+
+      // -------------------------
+      // WEATHER DATA
+      // -------------------------
+
+      weatherData: weather,
+
+      weatherRisk: risk,
+
       weatherConfig: config,
+
+      // -------------------------
+      // LOCATIONS
+      // -------------------------
+
+      locations: (
+        district.locations || []
+      ).map((location) => ({
+        ...location,
+
+        risk,
+
+        weatherRisk: risk,
+
+        mlPrediction: ml,
+      })),
     };
   });
 }
@@ -1528,60 +1602,169 @@ export default function DisasterDashboard() {
   ===================================================== */
 
   const loadWeather = useCallback(async (districtList) => {
-    if (!Array.isArray(districtList) || districtList.length === 0) {
-      return;
-    }
+  if (
+    !Array.isArray(districtList) ||
+    districtList.length === 0
+  ) {
+    return;
+  }
 
-    try {
-      setWeatherLoading(true);
-      setWeatherError("");
+  try {
+    setWeatherLoading(true);
+    setWeatherError("");
 
-      const results = await Promise.allSettled(
-        districtList.map(async (district) => {
-          const response = await fetch(
-            `${API_BASE_URL}/api/weather?latitude=${encodeURIComponent(
-              district.lat
-            )}&longitude=${encodeURIComponent(district.lng)}`
-          );
+    const results = await Promise.allSettled(
+      districtList.map(async (district) => {
+        // -----------------------------------------
+        // STEP 1: Get live weather
+        // -----------------------------------------
 
-          if (!response.ok) {
-            throw new Error(
-              `Weather request failed for ${district.name}`
-            );
-          }
-
-          return {
-            id: district.id,
-            data: await response.json(),
-          };
-        })
-      );
-
-      const nextWeather = {};
-
-      results.forEach((result) => {
-        if (result.status === "fulfilled") {
-          nextWeather[result.value.id] = result.value.data;
-        }
-      });
-
-      setWeatherByDistrict(nextWeather);
-
-      if (Object.keys(nextWeather).length === 0) {
-        setWeatherError(
-          "Live weather service unavailable. Using existing risk data."
+        const weatherResponse = await fetch(
+          `${API_BASE_URL}/api/weather?latitude=${encodeURIComponent(
+            district.lat
+          )}&longitude=${encodeURIComponent(
+            district.lng
+          )}`
         );
-      }
-    } catch (error) {
-      console.error("Weather synchronization error:", error);
-      setWeatherError(
-        "Live weather service unavailable. Using existing risk data."
-      );
-    } finally {
-      setWeatherLoading(false);
-    }
-  }, []);
 
+        if (!weatherResponse.ok) {
+          throw new Error(
+            `Weather request failed for ${district.name}`
+          );
+        }
+
+        const weatherData =
+          await weatherResponse.json();
+
+        const current =
+          weatherData?.current ||
+          weatherData ||
+          {};
+
+        // -----------------------------------------
+        // STEP 2: Prepare ML input
+        // -----------------------------------------
+
+        const rainfall = Number(
+          current.rain ??
+            current.precipitation ??
+            0
+        );
+
+        const temperature = Number(
+          current.temperature ?? 0
+        );
+
+        const humidity = Number(
+          current.humidity ?? 0
+        );
+
+        /*
+          River level अभी weather API से नहीं आ रहा,
+          इसलिए फिलहाल 0 भेज रहे हैं.
+
+          Baad mein real river-level API connect
+          kar sakte hain.
+        */
+        const river_level = Number(
+          current.river_level ?? 0
+        );
+
+        /*
+          Previous incidents backend/database se
+          aayenge to yahan replace kar dena.
+
+          फिलहाल district alerts ko proxy ki tarah
+          use kar rahe hain.
+        */
+        const previous_incidents = Number(
+          district.alerts ?? 0
+        );
+
+        // -----------------------------------------
+        // STEP 3: Call ML model
+        // -----------------------------------------
+
+        const mlResponse = await fetch(
+          `${API_BASE_URL}/predict-risk`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type":
+                "application/json",
+            },
+            body: JSON.stringify({
+              rainfall,
+              temperature,
+              humidity,
+              river_level,
+              previous_incidents,
+            }),
+          }
+        );
+
+        if (!mlResponse.ok) {
+          throw new Error(
+            `ML prediction failed for ${district.name}`
+          );
+        }
+
+        const mlPrediction =
+          await mlResponse.json();
+
+        // -----------------------------------------
+        // STEP 4: Return combined intelligence
+        // -----------------------------------------
+
+        return {
+          id: district.id,
+
+          weather: weatherData,
+
+          ml: mlPrediction,
+
+          inputs: {
+            rainfall,
+            temperature,
+            humidity,
+            river_level,
+            previous_incidents,
+          },
+        };
+      })
+    );
+
+    const nextWeather = {};
+
+    results.forEach((result) => {
+      if (result.status === "fulfilled") {
+        nextWeather[result.value.id] =
+          result.value;
+      }
+    });
+
+    setWeatherByDistrict(nextWeather);
+
+    if (
+      Object.keys(nextWeather).length === 0
+    ) {
+      setWeatherError(
+        "Live weather/ML service unavailable. Using existing risk data."
+      );
+    }
+  } catch (error) {
+    console.error(
+      "Weather + ML synchronization error:",
+      error
+    );
+
+    setWeatherError(
+      "Live weather or ML service unavailable. Using existing risk data."
+    );
+  } finally {
+    setWeatherLoading(false);
+  }
+}, []);
   /* =====================================================
      LOAD DASHBOARD
   ===================================================== */
@@ -1684,17 +1867,19 @@ export default function DisasterDashboard() {
   }, [loadDashboard]);
 
   useEffect(() => {
-    if (Object.keys(weatherByDistrict).length === 0) {
-      return;
-    }
+  if (
+    Object.keys(weatherByDistrict).length === 0
+  ) {
+    return;
+  }
 
-    setDistricts((currentDistricts) =>
-      applyWeatherRisk(
-        currentDistricts,
-        weatherByDistrict
-      )
-    );
-  }, [weatherByDistrict]);
+  setDistricts((currentDistricts) =>
+    applyMLRisk(
+      currentDistricts,
+      weatherByDistrict
+    )
+  );
+}, [weatherByDistrict]);
 
   /* =====================================================
      SEARCH OUTSIDE CLICK
