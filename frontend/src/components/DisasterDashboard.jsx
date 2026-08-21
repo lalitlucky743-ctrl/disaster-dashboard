@@ -2808,126 +2808,259 @@ export default function DisasterDashboard() {
   ===================================================== */
 
   const renderAnalytics = () => {
-    const analytics = [
-      {
-        name: "Landslide",
-        value: 82,
-        color: "#ef4444",
-      },
-      {
-        name: "Flood",
-        value: 68,
-        color: "#eab308",
-      },
-      {
-        name: "Earthquake",
-        value: 54,
-        color: "#f97316",
-      },
-      {
-        name: "Forest Fire",
-        value: 37,
-        color: "#22c55e",
-      },
-    ];
+  // --------------------------------------------------
+  // LIVE ML DATA
+  // --------------------------------------------------
 
-    return (
-      <>
-        <div className="grid grid-cols-2 xl:grid-cols-4 gap-3">
-          <MetricCard
-            icon={ShieldAlert}
-            label="Overall Risk"
-            value={`${computedMetrics.overallRisk}`}
-            detail="Composite score"
-            tone="red"
-          />
+  const liveDistricts = [...districts]
+    .map((district) => ({
+      ...district,
+      score: Math.max(
+        0,
+        Math.min(100, Number(district.score) || 0)
+      ),
+    }))
+    .sort((a, b) => b.score - a.score);
 
-          <MetricCard
+  // --------------------------------------------------
+  // RISK LEVEL DISTRIBUTION
+  // Based on current ML prediction of all districts
+  // --------------------------------------------------
+
+  const riskDistribution = [
+    {
+      name: "Low",
+      value: liveDistricts.filter(
+        (d) => d.risk === "LOW"
+      ).length,
+      color: "#22c55e",
+    },
+    {
+      name: "Medium",
+      value: liveDistricts.filter(
+        (d) => d.risk === "MEDIUM"
+      ).length,
+      color: "#eab308",
+    },
+    {
+      name: "High",
+      value: liveDistricts.filter(
+        (d) => d.risk === "HIGH"
+      ).length,
+      color: "#f97316",
+    },
+    {
+      name: "Critical",
+      value: liveDistricts.filter(
+        (d) => d.risk === "CRITICAL"
+      ).length,
+      color: "#ef4444",
+    },
+  ];
+
+  // --------------------------------------------------
+  // LIVE GRAPH POINTS
+  // Uses current ML risk_score for each district
+  // --------------------------------------------------
+
+  const graphDistricts = liveDistricts.slice(0, 13);
+
+  const graphWidth = 1000;
+  const graphHeight = 240;
+  const graphBottom = 220;
+  const graphTop = 20;
+
+  const graphPoints = graphDistricts.map(
+    (district, index) => {
+      const x =
+        graphDistricts.length === 1
+          ? graphWidth / 2
+          : (index /
+              (graphDistricts.length - 1)) *
+            graphWidth;
+
+      const score = district.score;
+
+      const y =
+        graphBottom -
+        (score / 100) *
+          (graphBottom - graphTop);
+
+      return {
+        x,
+        y,
+        score,
+        name: district.name,
+      };
+    }
+  );
+
+  const linePoints = graphPoints
+    .map(
+      (point) =>
+        `${point.x},${point.y}`
+    )
+    .join(" ");
+
+  const areaPoints =
+    graphPoints.length > 0
+      ? [
+          `0,${graphBottom}`,
+          ...graphPoints.map(
+            (point) =>
+              `${point.x},${point.y}`
+          ),
+          `${graphWidth},${graphBottom}`,
+        ].join(" ")
+      : "";
+
+  return (
+    <>
+      {/* =================================================
+          LIVE SUMMARY
+      ================================================= */}
+
+      <div className="grid grid-cols-2 xl:grid-cols-4 gap-3">
+        <MetricCard
+          icon={ShieldAlert}
+          label="Overall Risk"
+          value={`${computedMetrics.overallRisk}`}
+          detail="Live ML composite score"
+          tone="red"
+        />
+
+        <MetricCard
+          icon={TrendingUp}
+          label="Risk Trend"
+          value={
+            liveDistricts.length
+              ? `${liveDistricts[0]?.score || 0}`
+              : "—"
+          }
+          detail="Highest current district score"
+          tone="orange"
+        />
+
+        <MetricCard
+          icon={Activity}
+          label="Data Freshness"
+          value={
+            weatherLoading
+              ? "SYNC"
+              : "LIVE"
+          }
+          detail="Open-Meteo + ML"
+          tone="emerald"
+        />
+
+        <MetricCard
+          icon={Users}
+          label="Coverage"
+          value={
+            liveDistricts.length
+          }
+          detail="Live monitored districts"
+          tone="indigo"
+        />
+      </div>
+
+      {/* =================================================
+          LIVE RISK DISTRIBUTION + DISTRICT RANKING
+      ================================================= */}
+
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+
+        {/* LIVE RISK DISTRIBUTION */}
+
+        <section className="rounded-2xl border border-slate-800 bg-[#0d1420]/80 p-5">
+
+          <SectionHeader
+            title="Live Risk Distribution"
+            subtitle="Current ML risk levels across districts"
             icon={TrendingUp}
-            label="Risk Trend"
-            value="+8.4%"
-            detail="Compared with previous cycle"
-            tone="orange"
           />
 
-          <MetricCard
-            icon={Activity}
-            label="Data Freshness"
-            value="30s"
-            detail="Automatic refresh interval"
-            tone="emerald"
-          />
+          <div className="space-y-5">
 
-          <MetricCard
-            icon={Users}
-            label="Coverage"
-            value={
-              computedMetrics.monitoredLocations
-            }
-            detail="Monitored points"
-            tone="indigo"
-          />
-        </div>
+            {riskDistribution.map(
+              (item) => {
 
-        <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
-          {/* Hazard analytics */}
-          <section className="rounded-2xl border border-slate-800 bg-[#0d1420]/80 p-5">
-            <SectionHeader
-              title="Hazard Risk Distribution"
-              subtitle="Current threat intensity by hazard"
-              icon={TrendingUp}
-            />
+                const percentage =
+                  liveDistricts.length > 0
+                    ? Math.round(
+                        (item.value /
+                          liveDistricts.length) *
+                          100
+                      )
+                    : 0;
 
-            <div className="space-y-5">
-              {analytics.map((item) => (
-                <div key={item.name}>
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="text-xs text-slate-300">
-                      {item.name}
-                    </span>
+                return (
+                  <div
+                    key={item.name}
+                  >
 
-                    <span
-                      className="text-xs font-bold"
-                      style={{
-                        color: item.color,
-                      }}
-                    >
-                      {item.value}%
-                    </span>
+                    <div className="flex items-center justify-between mb-2">
+
+                      <span className="text-xs text-slate-300">
+                        {item.name}
+                      </span>
+
+                      <span
+                        className="text-xs font-bold"
+                        style={{
+                          color:
+                            item.color,
+                        }}
+                      >
+                        {item.value}{" "}
+                        district
+                        {item.value !== 1
+                          ? "s"
+                          : ""}{" "}
+                        ({percentage}%)
+                      </span>
+
+                    </div>
+
+                    <div className="h-2 rounded-full bg-slate-900 overflow-hidden">
+
+                      <div
+                        className="h-full rounded-full transition-all duration-700"
+                        style={{
+                          width: `${percentage}%`,
+                          backgroundColor:
+                            item.color,
+                        }}
+                      />
+
+                    </div>
+
                   </div>
+                );
+              }
+            )}
 
-                  <div className="h-2 rounded-full bg-slate-900 overflow-hidden">
-                    <div
-                      className="h-full rounded-full transition-all duration-700"
-                      style={{
-                        width: `${item.value}%`,
-                        backgroundColor:
-                          item.color,
-                      }}
-                    />
-                  </div>
-                </div>
-              ))}
-            </div>
-          </section>
+          </div>
 
-          {/* District analytics */}
-          <section className="rounded-2xl border border-slate-800 bg-[#0d1420]/80 p-5">
-            <SectionHeader
-              title="Regional Risk Ranking"
-              subtitle="Highest monitored risk scores"
-              icon={MapPin}
-            />
+        </section>
 
-            <div className="space-y-2">
-              {[...districts]
-                .sort(
-                  (a, b) =>
-                    Number(b.score) -
-                    Number(a.score)
-                )
-                .slice(0, 7)
-                .map((district, index) => {
+        {/* LIVE DISTRICT RANKING */}
+
+        <section className="rounded-2xl border border-slate-800 bg-[#0d1420]/80 p-5">
+
+          <SectionHeader
+            title="Live Regional Risk Ranking"
+            subtitle="Highest ML risk scores right now"
+            icon={MapPin}
+          />
+
+          <div className="space-y-2">
+
+            {liveDistricts
+              .slice(0, 7)
+              .map(
+                (district, index) => {
+
                   const config =
                     getRiskConfig(
                       district.risk
@@ -2944,6 +3077,7 @@ export default function DisasterDashboard() {
                       }
                       className="w-full flex items-center gap-3 p-3 rounded-xl bg-slate-950/30 hover:bg-slate-900/70 transition"
                     >
+
                       <span className="text-[10px] text-slate-700 w-4">
                         {String(
                           index + 1
@@ -2951,102 +3085,186 @@ export default function DisasterDashboard() {
                       </span>
 
                       <div className="flex-1 text-left">
+
                         <div className="text-xs font-semibold text-slate-300">
                           {district.name}
                         </div>
 
                         <div className="mt-1 h-1 rounded-full bg-slate-900 overflow-hidden">
+
                           <div
-                            className="h-full rounded-full"
+                            className="h-full rounded-full transition-all duration-700"
                             style={{
-                              width: `${Math.min(
-                                100,
-                                Number(
-                                  district.score
-                                ) || 0
-                              )}%`,
+                              width: `${district.score}%`,
                               backgroundColor:
                                 config.color,
                             }}
                           />
+
                         </div>
+
                       </div>
 
                       <span
                         className="text-xs font-black"
                         style={{
-                          color: config.color,
+                          color:
+                            config.color,
                         }}
                       >
                         {district.score}
                       </span>
+
                     </button>
                   );
-                })}
-            </div>
-          </section>
-        </div>
+                }
+              )}
 
-        {/* Trend */}
-        <section className="rounded-2xl border border-slate-800 bg-[#0d1420]/80 p-5">
-          <SectionHeader
-            title="24 Hour Risk Trend"
-            subtitle="Composite regional intelligence signal"
-            icon={Activity}
-          />
+          </div>
 
-          <div className="h-52 rounded-xl border border-slate-800 bg-[#080c13] relative overflow-hidden p-5">
-            <div className="absolute inset-0 opacity-20 bg-[linear-gradient(to_right,#334155_1px,transparent_1px),linear-gradient(to_bottom,#334155_1px,transparent_1px)] [background-size:40px_40px]" />
+        </section>
 
+      </div>
+
+      {/* =================================================
+          LIVE ML RISK GRAPH
+      ================================================= */}
+
+      <section className="rounded-2xl border border-slate-800 bg-[#0d1420]/80 p-5">
+
+        <SectionHeader
+          title="Current Regional Risk Graph"
+          subtitle="Live ML risk score by monitored district"
+          icon={Activity}
+          action={
+            <span className="flex items-center gap-1.5 text-[9px] text-emerald-400">
+              <StatusDot />
+              LIVE ML
+            </span>
+          }
+        />
+
+        <div className="h-64 rounded-xl border border-slate-800 bg-[#080c13] relative overflow-hidden p-5">
+
+          {/* GRID */}
+
+          <div className="absolute inset-0 opacity-20 bg-[linear-gradient(to_right,#334155_1px,transparent_1px),linear-gradient(to_bottom,#334155_1px,transparent_1px)] [background-size:40px_40px]" />
+
+          {graphPoints.length > 0 ? (
             <svg
-              viewBox="0 0 1000 240"
+              viewBox={`0 0 ${graphWidth} ${graphHeight}`}
               preserveAspectRatio="none"
               className="relative w-full h-full"
             >
-              <defs>
-                <linearGradient
-                  id="riskArea"
-                  x1="0"
-                  y1="0"
-                  x2="0"
-                  y2="1"
-                >
-                  <stop
-                    offset="0%"
-                    stopColor="#ef4444"
-                    stopOpacity="0.28"
-                  />
 
-                  <stop
-                    offset="100%"
-                    stopColor="#ef4444"
-                    stopOpacity="0"
-                  />
-                </linearGradient>
-              </defs>
+              {/* AREA */}
 
-              <path
-                d="M0,180 C100,160 120,170 200,145 C280,120 300,155 390,125 C470,95 510,130 600,95 C680,60 710,105 790,70 C860,40 920,75 1000,30 L1000,240 L0,240 Z"
-                fill="url(#riskArea)"
+              <polygon
+                points={areaPoints}
+                fill="#ef4444"
+                fillOpacity="0.12"
               />
 
-              <path
-                d="M0,180 C100,160 120,170 200,145 C280,120 300,155 390,125 C470,95 510,130 600,95 C680,60 710,105 790,70 C860,40 920,75 1000,30"
+              {/* LIVE LINE */}
+
+              <polyline
+                points={linePoints}
                 fill="none"
                 stroke="#ef4444"
-                strokeWidth="3"
+                strokeWidth="4"
+                strokeLinecap="round"
+                strokeLinejoin="round"
               />
-            </svg>
 
-            <div className="absolute top-3 right-4 flex items-center gap-2 text-[9px] text-red-400">
-              <TrendingUp className="w-3 h-3" />
-              Elevated
+              {/* POINTS */}
+
+              {graphPoints.map(
+                (point) => (
+                  <circle
+                    key={point.name}
+                    cx={point.x}
+                    cy={point.y}
+                    r="7"
+                    fill="#0d1420"
+                    stroke="#ef4444"
+                    strokeWidth="3"
+                  />
+                )
+              )}
+
+            </svg>
+          ) : (
+            <div className="relative h-full flex items-center justify-center text-xs text-slate-600">
+              Waiting for live ML data...
             </div>
+          )}
+
+          {/* LIVE LABEL */}
+
+          <div className="absolute top-3 right-4 flex items-center gap-2 text-[9px] text-red-400">
+            <TrendingUp className="w-3 h-3" />
+            Live ML Risk
           </div>
-        </section>
-      </>
-    );
-  };
+
+        </div>
+
+        {/* DISTRICT LABELS */}
+
+        <div className="mt-3 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-2">
+
+          {graphDistricts.map(
+            (district) => {
+
+              const config =
+                getRiskConfig(
+                  district.risk
+                );
+
+              return (
+                <div
+                  key={district.id}
+                  className="flex items-center justify-between rounded-lg border border-slate-800 bg-slate-950/30 px-2.5 py-2"
+                >
+
+                  <div className="min-w-0">
+
+                    <div className="text-[9px] text-slate-400 truncate">
+                      {district.name}
+                    </div>
+
+                    <div
+                      className="text-[8px]"
+                      style={{
+                        color:
+                          config.color,
+                      }}
+                    >
+                      {config.label}
+                    </div>
+
+                  </div>
+
+                  <div
+                    className="text-xs font-black ml-2"
+                    style={{
+                      color:
+                        config.color,
+                    }}
+                  >
+                    {district.score}
+                  </div>
+
+                </div>
+              );
+            }
+          )}
+
+        </div>
+
+      </section>
+    </>
+  );
+};
 
   /* =====================================================
      AI
