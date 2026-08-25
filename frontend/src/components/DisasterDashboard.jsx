@@ -57,6 +57,7 @@ import "leaflet/dist/leaflet.css";
 import { dashboardApi } from "../api/dashboardApi";
 import { aiApi } from "../api/aiApi";
 import { useAuth } from "../context/AuthContext";
+import { LifeBuoy,} from "lucide-react";
 
 /* =========================================================
    CONSTANTS
@@ -87,6 +88,10 @@ const TAB_CONFIG = [
     id: "AI Intelligence",
     icon: MessageSquareText,
   },
+  {
+  id: "Relief",
+  icon: LifeBuoy,
+},
 ];
 
 const RISK_CONFIG = {
@@ -3421,23 +3426,32 @@ export default function DisasterDashboard() {
               const Icon = tab.icon;
               const active =
                 activeTab === tab.id;
+                
 
               return (
-                <button
-                  key={tab.id}
-                  type="button"
-                  onClick={() =>
-                    navigateTab(tab.id)
-                  }
-                  className={`h-full px-4 flex items-center gap-2 text-[10px] font-semibold border-b-2 transition ${
-                    active
-                      ? "text-indigo-300 border-indigo-500"
-                      : "text-slate-600 border-transparent hover:text-slate-300"
-                  }`}
-                >
-                  <Icon className="w-3.5 h-3.5" />
-                  {tab.id}
-                </button>
+        <button
+  key={tab.id}
+  type="button"
+  onClick={() => {
+    if (tab.id === "Relief") {
+      window.open(
+        "https://disaster-app-drab.vercel.app/",
+        "_blank",
+        "noopener,noreferrer"
+      );
+    } else {
+      navigateTab(tab.id);
+    }
+  }}
+  className={`h-full px-4 flex items-center gap-2 text-[10px] font-semibold border-b-2 transition ${
+    active
+      ? "text-indigo-300 border-indigo-500"
+      : "text-slate-600 border-transparent hover:text-slate-300"
+  }`}
+>
+  <Icon className="w-3.5 h-3.5" />
+  {tab.id}
+</button>
               );
             })}
 
@@ -3463,9 +3477,18 @@ export default function DisasterDashboard() {
                 <button
                   key={tab.id}
                   type="button"
-                  onClick={() =>
-                    navigateTab(tab.id)
-                  }
+                  onClick={() => {
+  if (tab.id === "Relief") {
+    window.open(
+      "https://disaster-app-drab.vercel.app/",
+      "_blank",
+      "noopener,noreferrer"
+    );
+    setMobileMenuOpen(false);
+  } else {
+    navigateTab(tab.id);
+  }
+}}
                   className={`w-full px-3 py-3 rounded-lg flex items-center gap-3 text-xs ${
                     activeTab === tab.id
                       ? "bg-indigo-500/10 text-indigo-300"
