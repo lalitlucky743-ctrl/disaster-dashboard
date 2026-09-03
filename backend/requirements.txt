@@ -18,3 +18,4 @@ email-validator==2.2.0
 joblib
 scikit-learn
 numpy
+pandas
