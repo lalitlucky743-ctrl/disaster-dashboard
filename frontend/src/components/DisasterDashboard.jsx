@@ -1749,73 +1749,74 @@ export default function DisasterDashboard() {
       const current =
         weatherData.current || {};
 
-      const inputs = {
-        temperature: Number(
-          current.temperature ?? 0
-        ),
+     const inputs = {
+  latitude: Number(district.lat),
+  longitude: Number(district.lng),
+};
 
-        humidity: Number(
-          current.humidity ?? 0
-        ),
+console.log(
+  `🤖 LIVE ML request for ${district.name}:`,
+  inputs
+);
 
-        precipitation: Number(
-          current.precipitation ?? 0
-        ),
+let mlPrediction = null;
 
-        rain: Number(
-          current.rain ?? 0
-        ),
+try {
+  const mlResponse = await fetch(
+    `${API_BASE_URL}/api/ml/predict-risk`,
+    {
+      method: "POST",
 
-        weather_code: Number(
-          current.weather_code ?? 0
-        ),
-      };
+      headers: {
+        "Content-Type": "application/json",
+      },
 
-      console.log(
-        `🤖 ML request for ${district.name}:`,
-        inputs
-      );
+      body: JSON.stringify(inputs),
+    }
+  );
 
-      let mlPrediction = null;
+  if (!mlResponse.ok) {
+    const errorText = await mlResponse.text();
 
-      try {
-        const mlResponse = await fetch(
-          `${API_BASE_URL}/api/ml/predict-risk`,
-          {
-            method: "POST",
+    throw new Error(
+      `ML ${mlResponse.status}: ${errorText}`
+    );
+  }
 
-            headers: {
-              "Content-Type": "application/json",
-            },
+  mlPrediction = await mlResponse.json();
 
-            body: JSON.stringify(inputs),
-          }
-        );
+  console.log(
+    `✅ LIVE ML response for ${district.name}:`,
+    mlPrediction
+  );
 
-        if (!mlResponse.ok) {
-          const errorText =
-            await mlResponse.text();
+} catch (mlError) {
+  console.error(
+    `❌ LIVE ML failed for ${district.name}:`,
+    mlError
+  );
+}
 
-          throw new Error(
-            `ML ${mlResponse.status}: ${errorText}`
-          );
-        }
+// ------------------------------------------------
+// IMPORTANT:
+// Weather is stored directly at the district level
+// so existing JSX can use:
+//
+// weather.current.temperature
+// weather.current.humidity
+// weather.current.rain
+// weather.current.wind_speed
+// ------------------------------------------------
 
-        mlPrediction =
-          await mlResponse.json();
+nextWeather[district.id] = {
+  ...weatherData,
 
-        console.log(
-          `✅ ML response for ${district.name}:`,
-          mlPrediction
-        );
+  ml: mlPrediction,
 
-      } catch (mlError) {
-        console.error(
-          `❌ ML failed for ${district.name}:`,
-          mlError
-        );
-      }
+  ml_prediction: mlPrediction,
 
+  inputs,
+};
       // ------------------------------------------------
       // IMPORTANT:
       // Weather is stored directly at the district level

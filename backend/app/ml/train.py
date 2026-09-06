@@ -1,31 +1,53 @@
 
 """
 DISASTER INTELLIGENCE PLATFORM
-REAL DATA ML TRAINING - IMPROVED VERSION
+================================
+REAL-DATA FLOOD ML TRAINING - V3
 
-Data sources:
-1. India Flood Inventory (IFI) - real historical flood events
-2. Open-Meteo Historical Weather - real historical weather
+REAL SOURCES
+------------
+1. India Flood Inventory (IFI)
+   -> Real historical flood-event labels
 
-IMPORTANT:
-- No synthetic flood events
-- No artificial MEDIUM labels
-- Actual flood dates = HIGH
-- Other observed weather days = LOW
-- Uses rolling rainfall features for better flood detection
+2. Open-Meteo Historical Weather
+   -> Real observed/modelled historical weather
+
+IMPORTANT
+---------
+NO synthetic flood events.
+NO fake rainfall.
+NO artificial MEDIUM labels.
+
+LABELS
+------
+2 = HIGH / documented flood event
+0 = LOW / no documented flood event in IFI
+
+IMPORTANT LIMITATION
+--------------------
+This is a FLOOD-EVENT classifier based on the
+available IFI event inventory.
+
+It is NOT a guaranteed physical flood forecast.
+
+The model learns relationships between:
+    historical weather
+        +
+documented flood occurrence
 """
 
 import os
 import time
 import pickle
 import warnings
-from datetime import datetime
+from datetime import datetime, date, timedelta
 
 import numpy as np
 import pandas as pd
 import requests
 
 from sklearn.ensemble import RandomForestClassifier
+
 from sklearn.metrics import (
     accuracy_score,
     classification_report,
@@ -33,8 +55,8 @@ from sklearn.metrics import (
     precision_score,
     recall_score,
     f1_score,
+    roc_auc_score,
 )
-from sklearn.model_selection import train_test_split
 
 warnings.filterwarnings("ignore")
 
@@ -43,27 +65,48 @@ warnings.filterwarnings("ignore")
 # PATHS
 # ============================================================
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DATA_DIR = os.path.join(BASE_DIR, "data")
+BASE_DIR = os.path.dirname(
+    os.path.abspath(__file__)
+)
 
-os.makedirs(DATA_DIR, exist_ok=True)
+DATA_DIR = os.path.join(
+    BASE_DIR,
+    "data"
+)
 
-FLOOD_FILE = os.path.join(DATA_DIR, "India_Flood_Inventory_v3.csv")
-WEATHER_CACHE_DIR = os.path.join(DATA_DIR, "weather_cache")
+WEATHER_CACHE_DIR = os.path.join(
+    DATA_DIR,
+    "weather_cache_v3"
+)
+
+FLOOD_FILE = os.path.join(
+    DATA_DIR,
+    "India_Flood_Inventory_v3.csv"
+)
+
 TRAINING_FILE = os.path.join(
     DATA_DIR,
-    "real_disaster_training_data.csv"
+    "real_disaster_training_data_v3.csv"
 )
+
 MODEL_FILE = os.path.join(
     BASE_DIR,
     "disaster_model.pkl"
 )
 
-os.makedirs(WEATHER_CACHE_DIR, exist_ok=True)
+os.makedirs(
+    DATA_DIR,
+    exist_ok=True
+)
+
+os.makedirs(
+    WEATHER_CACHE_DIR,
+    exist_ok=True
+)
 
 
 # ============================================================
-# DATA SOURCE
+# REAL FLOOD DATA SOURCE
 # ============================================================
 
 IFI_URL = (
@@ -73,31 +116,113 @@ IFI_URL = (
 
 
 # ============================================================
-# UTTARAKHAND DISTRICTS
+# WEATHER SOURCE
+# ============================================================
+
+OPEN_METEO_ARCHIVE = (
+    "https://archive-api.open-meteo.com/v1/archive"
+)
+
+
+# ============================================================
+# TRAINING RANGE
+# ============================================================
+
+# Open-Meteo historical archive has much older data,
+# but we intentionally use a modern period with the
+# required variables.
+
+TRAINING_START_YEAR = 2021
+
+# Do NOT train on today's incomplete historical day.
+TRAINING_END_DATE = (
+    date.today() - timedelta(days=2)
+)
+
+TRAINING_END_YEAR = (
+    TRAINING_END_DATE.year
+)
+
+
+# ============================================================
+# DISTRICTS
 # ============================================================
 
 DISTRICTS = {
-    "Almora": (29.5971, 79.6591),
-    "Bageshwar": (29.8388, 79.7711),
-    "Chamoli": (30.4028, 79.3180),
-    "Champawat": (29.3350, 80.0910),
-    "Dehradun": (30.3165, 78.0322),
-    "Haridwar": (29.9457, 78.1642),
-    "Nainital": (29.3919, 79.4542),
-    "Pauri Garhwal": (30.1486, 78.7814),
-    "Pithoragarh": (29.5829, 80.2182),
-    "Rudraprayag": (30.2847, 78.9811),
-    "Tehri Garhwal": (30.3780, 78.4804),
-    "Udham Singh Nagar": (28.9760, 79.4000),
-    "Uttarkashi": (30.7268, 78.4354),
+
+    "Almora": (
+        29.5971,
+        79.6591
+    ),
+
+    "Bageshwar": (
+        29.8388,
+        79.7711
+    ),
+
+    "Chamoli": (
+        30.4028,
+        79.3180
+    ),
+
+    "Champawat": (
+        29.3350,
+        80.0910
+    ),
+
+    "Dehradun": (
+        30.3165,
+        78.0322
+    ),
+
+    "Haridwar": (
+        29.9457,
+        78.1642
+    ),
+
+    "Nainital": (
+        29.3919,
+        79.4542
+    ),
+
+    "Pauri Garhwal": (
+        30.1486,
+        78.7814
+    ),
+
+    "Pithoragarh": (
+        29.5829,
+        80.2182
+    ),
+
+    "Rudraprayag": (
+        30.2847,
+        78.9811
+    ),
+
+    "Tehri Garhwal": (
+        30.3780,
+        78.4804
+    ),
+
+    "Udham Singh Nagar": (
+        28.9760,
+        79.4000
+    ),
+
+    "Uttarkashi": (
+        30.7268,
+        78.4354
+    ),
 }
 
 
 # ============================================================
-# DISTRICT NAME NORMALIZATION
+# DISTRICT ALIASES
 # ============================================================
 
 DISTRICT_ALIASES = {
+
     "almora": "Almora",
     "almora district": "Almora",
 
@@ -144,25 +269,61 @@ DISTRICT_ALIASES = {
 }
 
 
+# ============================================================
+# FEATURES
+# ============================================================
+
+FEATURES = [
+
+    "temperature_2m_mean",
+    "temperature_2m_max",
+    "temperature_2m_min",
+
+    "relative_humidity_2m_mean",
+
+    "precipitation_sum",
+    "rain_sum",
+
+    "weather_code",
+
+    "rain_3day",
+    "rain_7day",
+    "rain_14day",
+    "rain_30day",
+
+    "rain_intensity_3day",
+]
+
+
+# ============================================================
+# NORMALIZE DISTRICT
+# ============================================================
+
 def normalize_district(value):
+
     if pd.isna(value):
         return None
 
-    text = str(value).strip().lower()
+    text = str(
+        value
+    ).strip().lower()
 
     text = (
-        text.replace(",", "")
+        text
+        .replace(",", "")
         .replace("-", " ")
         .replace("_", " ")
     )
 
-    text = " ".join(text.split())
+    text = " ".join(
+        text.split()
+    )
 
     if text in DISTRICT_ALIASES:
         return DISTRICT_ALIASES[text]
 
-    # fallback partial matching
     for alias, canonical in DISTRICT_ALIASES.items():
+
         if alias in text:
             return canonical
 
@@ -170,38 +331,66 @@ def normalize_district(value):
 
 
 # ============================================================
-# DOWNLOAD FLOOD DATA
+# DOWNLOAD IFI
 # ============================================================
 
 def get_flood_data():
 
-    if os.path.exists(FLOOD_FILE):
-        print("Flood dataset already exists.")
-        return pd.read_csv(FLOOD_FILE)
+    if os.path.exists(
+        FLOOD_FILE
+    ):
 
-    print("Downloading India Flood Inventory...")
+        print(
+            "\nFlood dataset already exists."
+        )
+
+        return pd.read_csv(
+            FLOOD_FILE
+        )
+
+    print(
+        "\nDownloading India Flood Inventory..."
+    )
 
     response = requests.get(
         IFI_URL,
-        timeout=120
+        timeout=180
     )
 
     response.raise_for_status()
 
-    with open(FLOOD_FILE, "wb") as f:
-        f.write(response.content)
+    with open(
+        FLOOD_FILE,
+        "wb"
+    ) as file:
 
-    print("Flood dataset downloaded.")
+        file.write(
+            response.content
+        )
 
-    return pd.read_csv(FLOOD_FILE)
+    print(
+        "Flood dataset downloaded."
+    )
+
+    return pd.read_csv(
+        FLOOD_FILE
+    )
 
 
 # ============================================================
-# WEATHER CACHE
+# CACHE
 # ============================================================
 
-def cache_path(district, year):
-    safe_name = district.replace(" ", "_")
+def cache_path(
+    district,
+    year
+):
+
+    safe_name = (
+        district
+        .replace(" ", "_")
+    )
+
     return os.path.join(
         WEATHER_CACHE_DIR,
         f"{safe_name}_{year}.csv"
@@ -209,7 +398,64 @@ def cache_path(district, year):
 
 
 # ============================================================
-# FETCH ONE YEAR WEATHER
+# VALIDATE CACHE
+# ============================================================
+
+def valid_cached_weather(
+    path,
+    year
+):
+
+    if not os.path.exists(path):
+        return False
+
+    try:
+
+        df = pd.read_csv(
+            path
+        )
+
+        if df.empty:
+            return False
+
+        required = [
+            "date",
+            "temperature_2m_mean",
+            "temperature_2m_max",
+            "temperature_2m_min",
+            "relative_humidity_2m_mean",
+            "precipitation_sum",
+            "rain_sum",
+            "weather_code",
+        ]
+
+        if not all(
+            col in df.columns
+            for col in required
+        ):
+            return False
+
+        dates = pd.to_datetime(
+            df["date"],
+            errors="coerce"
+        )
+
+        if dates.isna().all():
+            return False
+
+        # Cache must actually belong to this year.
+        if dates.dt.year.min() != year:
+            return False
+
+        return True
+
+    except Exception:
+
+        return False
+
+
+# ============================================================
+# FETCH ONE YEAR
 # ============================================================
 
 def fetch_weather_year(
@@ -220,37 +466,65 @@ def fetch_weather_year(
     retries=3
 ):
 
-    path = cache_path(district, year)
+    path = cache_path(
+        district,
+        year
+    )
 
     # --------------------------------------------------------
-    # USE CACHE
+    # Cache
     # --------------------------------------------------------
 
-    if os.path.exists(path):
+    if valid_cached_weather(
+        path,
+        year
+    ):
 
-        try:
-            cached = pd.read_csv(path)
+        cached = pd.read_csv(
+            path
+        )
 
-            if not cached.empty:
-                print(
-                    f"    CACHE: {year} "
-                    f"({len(cached)} days)"
-                )
-                return cached
+        print(
+            f"    CACHE OK: {year} "
+            f"({len(cached)} days)"
+        )
 
-        except Exception:
-            pass
+        return cached
 
-    start_date = f"{year}-01-01"
-    end_date = f"{year}-12-31"
+    # --------------------------------------------------------
+    # Date range
+    # --------------------------------------------------------
 
-    url = "https://archive-api.open-meteo.com/v1/archive"
+    start_date = (
+        f"{year}-01-01"
+    )
+
+    if year == TRAINING_END_YEAR:
+
+        end_date = (
+            TRAINING_END_DATE
+            .isoformat()
+        )
+
+    else:
+
+        end_date = (
+            f"{year}-12-31"
+        )
+
+    print(
+        f"    FETCH: {start_date} "
+        f"-> {end_date}"
+    )
 
     params = {
+
         "latitude": latitude,
         "longitude": longitude,
+
         "start_date": start_date,
         "end_date": end_date,
+
         "daily": (
             "temperature_2m_mean,"
             "temperature_2m_max,"
@@ -260,48 +534,97 @@ def fetch_weather_year(
             "rain_sum,"
             "weather_code"
         ),
+
         "timezone": "Asia/Kolkata",
+
     }
 
-    for attempt in range(1, retries + 1):
+    for attempt in range(
+        1,
+        retries + 1
+    ):
 
         try:
 
             response = requests.get(
-                url,
+                OPEN_METEO_ARCHIVE,
                 params=params,
-                timeout=60
+                timeout=120
             )
 
             response.raise_for_status()
 
-            data = response.json()
+            payload = (
+                response.json()
+            )
 
-            if "daily" not in data:
-                raise ValueError(
-                    "Daily weather data missing"
+            if "daily" not in payload:
+                raise RuntimeError(
+                    "Daily weather data missing."
                 )
 
-            daily = data["daily"]
+            daily = payload[
+                "daily"
+            ]
 
-            df = pd.DataFrame(daily)
+            df = pd.DataFrame(
+                daily
+            )
 
             if df.empty:
-                raise ValueError(
-                    "Empty weather response"
+                raise RuntimeError(
+                    "Empty weather response."
                 )
 
-            df["date"] = pd.to_datetime(
-                df["time"]
-            ).dt.date
-
-            df["district"] = district
+            df["date"] = (
+                pd.to_datetime(
+                    df["time"],
+                    errors="coerce"
+                )
+                .dt.normalize()
+            )
 
             df.drop(
                 columns=["time"],
                 inplace=True,
                 errors="ignore"
             )
+
+            df["district"] = district
+
+            # ------------------------------------------------
+            # Remove invalid dates
+            # ------------------------------------------------
+
+            df = df.dropna(
+                subset=["date"]
+            )
+
+            # ------------------------------------------------
+            # Numeric conversion
+            # ------------------------------------------------
+
+            numeric_columns = [
+
+                "temperature_2m_mean",
+                "temperature_2m_max",
+                "temperature_2m_min",
+                "relative_humidity_2m_mean",
+                "precipitation_sum",
+                "rain_sum",
+                "weather_code",
+            ]
+
+            for col in numeric_columns:
+
+                df[col] = pd.to_numeric(
+                    df[col],
+                    errors="coerce"
+                )
+
+            # ------------------------------------------------
+            # Save REAL API response
+            # ------------------------------------------------
 
             df.to_csv(
                 path,
@@ -314,18 +637,22 @@ def fetch_weather_year(
 
             return df
 
-        except Exception as e:
+        except Exception as error:
 
             print(
-                f"    Attempt {attempt}/{retries} "
-                f"failed: {e}"
+                f"    Attempt "
+                f"{attempt}/{retries} failed: "
+                f"{error}"
             )
 
             if attempt < retries:
-                time.sleep(2 * attempt)
+
+                time.sleep(
+                    2 * attempt
+                )
 
     print(
-        f"    Skipping weather year {year}"
+        f"    FAILED: {district} {year}"
     )
 
     return None
@@ -338,24 +665,22 @@ def fetch_weather_year(
 def get_weather_range(
     district,
     latitude,
-    longitude,
-    start_year,
-    end_year
+    longitude
 ):
 
-    all_weather = []
+    frames = []
 
     print(
-        f"Weather period: "
-        f"{start_year} -> {end_year}"
+        f"\nWeather range: "
+        f"{TRAINING_START_YEAR}"
+        f" -> "
+        f"{TRAINING_END_YEAR}"
     )
 
-    for year in range(start_year, end_year + 1):
-
-        print(
-            f"  Weather year {year}: "
-            f"{year}-01-01 -> {year}-12-31"
-        )
+    for year in range(
+        TRAINING_START_YEAR,
+        TRAINING_END_YEAR + 1
+    ):
 
         df = fetch_weather_year(
             district,
@@ -365,86 +690,96 @@ def get_weather_range(
         )
 
         if df is not None:
-            all_weather.append(df)
 
-        # small pause to avoid hammering API
-        time.sleep(0.25)
+            frames.append(
+                df
+            )
 
-    if not all_weather:
+        time.sleep(
+            0.30
+        )
+
+    if not frames:
+
         return pd.DataFrame()
 
     weather = pd.concat(
-        all_weather,
+        frames,
         ignore_index=True
     )
 
-    weather["date"] = pd.to_datetime(
-        weather["date"]
+    weather["date"] = (
+        pd.to_datetime(
+            weather["date"],
+            errors="coerce"
+        )
+        .dt.normalize()
     )
 
-    weather.sort_values(
-        "date",
-        inplace=True
+    weather = weather.dropna(
+        subset=["date"]
     )
 
-    weather.reset_index(
-        drop=True,
-        inplace=True
+    weather = (
+        weather
+        .sort_values("date")
+        .drop_duplicates(
+            subset=["date"]
+        )
+        .reset_index(drop=True)
     )
 
     # --------------------------------------------------------
-    # CLEAN NUMERIC COLUMNS
+    # REAL WEATHER FEATURES
     # --------------------------------------------------------
 
-    numeric_columns = [
-        "temperature_2m_mean",
-        "temperature_2m_max",
-        "temperature_2m_min",
-        "relative_humidity_2m_mean",
-        "precipitation_sum",
-        "rain_sum",
-        "weather_code",
-    ]
-
-    for col in numeric_columns:
-
-        if col in weather.columns:
-            weather[col] = pd.to_numeric(
-                weather[col],
-                errors="coerce"
-            )
-
-    # --------------------------------------------------------
-    # REAL WEATHER-DERIVED FEATURES
-    # --------------------------------------------------------
+    rainfall = pd.to_numeric(
+        weather["precipitation_sum"],
+        errors="coerce"
+    )
 
     weather["rain_3day"] = (
-        weather["precipitation_sum"]
-        .rolling(3, min_periods=1)
+        rainfall
+        .rolling(
+            3,
+            min_periods=1
+        )
         .sum()
     )
 
     weather["rain_7day"] = (
-        weather["precipitation_sum"]
-        .rolling(7, min_periods=1)
+        rainfall
+        .rolling(
+            7,
+            min_periods=1
+        )
         .sum()
     )
 
     weather["rain_14day"] = (
-        weather["precipitation_sum"]
-        .rolling(14, min_periods=1)
+        rainfall
+        .rolling(
+            14,
+            min_periods=1
+        )
         .sum()
     )
 
     weather["rain_30day"] = (
-        weather["precipitation_sum"]
-        .rolling(30, min_periods=1)
+        rainfall
+        .rolling(
+            30,
+            min_periods=1
+        )
         .sum()
     )
 
     weather["rain_intensity_3day"] = (
-        weather["precipitation_sum"]
-        .rolling(3, min_periods=1)
+        rainfall
+        .rolling(
+            3,
+            min_periods=1
+        )
         .mean()
     )
 
@@ -460,53 +795,73 @@ def get_weather_range(
 # PREPARE FLOOD DATA
 # ============================================================
 
-def prepare_flood_data(df):
-
-    print("\nFlood dataset columns:")
-    print(df.columns.tolist())
+def prepare_flood_data(
+    df
+):
 
     print(
-        f"\nNumber of flood records: "
+        "\nFlood dataset columns:"
+    )
+
+    print(
+        df.columns.tolist()
+    )
+
+    print(
+        f"\nFlood records: "
         f"{len(df)}"
     )
 
     date_column = "Start Date"
     district_column = "Districts"
 
-    print(
-        f"\nUsing date column: {date_column}"
-    )
+    if date_column not in df.columns:
+        raise RuntimeError(
+            f"Missing column: {date_column}"
+        )
 
-    print(
-        f"Using district column: {district_column}"
-    )
+    if district_column not in df.columns:
+        raise RuntimeError(
+            f"Missing column: {district_column}"
+        )
 
-    df[date_column] = pd.to_datetime(
-        df[date_column],
-        errors="coerce"
+    df = df.copy()
+
+    df[date_column] = (
+        pd.to_datetime(
+            df[date_column],
+            errors="coerce"
+        )
     )
 
     df["normalized_district"] = (
         df[district_column]
-        .apply(normalize_district)
+        .apply(
+            normalize_district
+        )
     )
 
     df = df.dropna(
-        subset=[date_column]
-    ).copy()
+        subset=[
+            date_column,
+            "normalized_district"
+        ]
+    )
 
     df["flood_date"] = (
         df[date_column]
         .dt.normalize()
     )
 
-    valid_years = df[
-        "flood_date"
-    ].dt.year
+    valid_years = (
+        df["flood_date"]
+        .dt.year
+    )
 
     print(
-        f"\nFlood records cover "
-        f"{valid_years.min()} - "
+        f"\nIFI records cover: "
+        f"{valid_years.min()} "
+        f"- "
         f"{valid_years.max()}"
     )
 
@@ -517,7 +872,9 @@ def prepare_flood_data(df):
 # CREATE DATASET
 # ============================================================
 
-def create_training_dataset(flood_df):
+def create_training_dataset(
+    flood_df
+):
 
     training_parts = []
 
@@ -526,19 +883,38 @@ def create_training_dataset(flood_df):
         longitude
     ) in DISTRICTS.items():
 
-        print("\n================================")
-        print(f"DISTRICT: {district}")
-        print("================================")
+        print(
+            "\n"
+            + "=" * 60
+        )
 
-        district_floods = flood_df[
-            flood_df["normalized_district"]
-            == district
-        ].copy()
+        print(
+            f"DISTRICT: {district}"
+        )
+
+        print(
+            "=" * 60
+        )
+
+        district_floods = (
+            flood_df[
+                flood_df[
+                    "normalized_district"
+                ]
+                == district
+            ]
+            .copy()
+        )
+
+        # ----------------------------------------------------
+        # No flood records for district
+        # ----------------------------------------------------
 
         if district_floods.empty:
 
             print(
-                "No matching flood records found."
+                "No IFI flood records "
+                "for this district."
             )
 
             continue
@@ -546,91 +922,107 @@ def create_training_dataset(flood_df):
         flood_dates = set(
             district_floods[
                 "flood_date"
-            ].dt.normalize()
+            ]
         )
 
         print(
-            f"Actual flood records: "
-            f"{len(district_floods)}"
-        )
-
-        print(
-            f"Unique flood days: "
+            f"Unique documented flood days: "
             f"{len(flood_dates)}"
         )
 
-        start_year = int(
-            district_floods[
-                "flood_date"
-            ].dt.year.min()
-        )
-
-        end_year = int(
-            district_floods[
-                "flood_date"
-            ].dt.year.max()
-        )
-
         # ----------------------------------------------------
-        # Open-Meteo archive availability starts from 1940,
-        # but our model uses the available period from IFI.
+        # IMPORTANT:
+        #
+        # Weather is NOT restricted to IFI's maximum year.
+        #
+        # We fetch from 2021 to latest available date.
         # ----------------------------------------------------
 
         weather = get_weather_range(
             district,
             latitude,
-            longitude,
-            start_year,
-            end_year
+            longitude
         )
 
         if weather.empty:
+
             print(
-                "No weather data available."
+                "No weather data."
             )
+
             continue
+
+        # ----------------------------------------------------
+        # Only use dates for which weather exists.
+        # ----------------------------------------------------
 
         weather["risk"] = (
             weather["date"]
-            .dt.normalize()
             .isin(flood_dates)
             .astype(int)
             * 2
         )
 
         # ----------------------------------------------------
-        # Keep ACTUAL flood days
+        # Actual documented flood days
         # ----------------------------------------------------
 
-        flood_samples = weather[
-            weather["risk"] == 2
-        ].copy()
+        flood_samples = (
+            weather[
+                weather["risk"] == 2
+            ]
+            .copy()
+        )
 
         # ----------------------------------------------------
-        # Real non-flood days
+        # REAL non-flood days
         #
-        # We sample actual observed days, not synthetic data.
-        # Maximum 20 LOW days per district to reduce imbalance.
+        # Do NOT randomly keep only 20.
+        #
+        # Instead:
+        # - exclude flood days
+        # - balance using deterministic sampling
+        # - retain a large representative set
         # ----------------------------------------------------
 
-        non_flood = weather[
-            weather["risk"] == 0
-        ].copy()
+        non_flood = (
+            weather[
+                weather["risk"] == 0
+            ]
+            .copy()
+        )
 
-        if len(non_flood) > 20:
+        # ----------------------------------------------------
+        # Balance ratio
+        #
+        # Keep at most 4 LOW observations per flood day.
+        #
+        # These are still REAL observed weather days.
+        # ----------------------------------------------------
 
-            non_flood = non_flood.sample(
-                n=20,
-                random_state=42
+        max_non_flood = max(
+            len(flood_samples) * 4,
+            100
+        )
+
+        if len(non_flood) > max_non_flood:
+
+            non_flood = (
+                non_flood
+                .sample(
+                    n=max_non_flood,
+                    random_state=42
+                )
+                .sort_values("date")
             )
 
         print(
-            f"Actual flood days used: "
+            f"Flood samples: "
             f"{len(flood_samples)}"
         )
 
         print(
-            f"Real non-flood days used: "
+            f"Real non-flood samples: "
             f"{len(non_flood)}"
         )
 
@@ -651,6 +1043,7 @@ def create_training_dataset(flood_df):
         )
 
     if not training_parts:
+
         raise RuntimeError(
             "No training data was created."
         )
@@ -660,34 +1053,37 @@ def create_training_dataset(flood_df):
         ignore_index=True
     )
 
+    dataset = (
+        dataset
+        .sort_values(
+            ["date", "district"]
+        )
+        .reset_index(
+            drop=True
+        )
+    )
+
     return dataset
 
 
 # ============================================================
-# FEATURE PREPARATION
+# PREPARE FEATURES
 # ============================================================
 
-FEATURES = [
-    "temperature_2m_mean",
-    "temperature_2m_max",
-    "temperature_2m_min",
-    "relative_humidity_2m_mean",
-    "precipitation_sum",
-    "rain_sum",
-    "weather_code",
-    "rain_3day",
-    "rain_7day",
-    "rain_14day",
-    "rain_30day",
-    "rain_intensity_3day",
-]
-
-
-def prepare_features(dataset):
+def prepare_features(
+    dataset
+):
 
     df = dataset.copy()
 
     for feature in FEATURES:
+
+        if feature not in df.columns:
+
+            raise RuntimeError(
+                f"Missing feature: "
+                f"{feature}"
+            )
 
         df[feature] = pd.to_numeric(
             df[feature],
@@ -698,58 +1094,151 @@ def prepare_features(dataset):
         subset=FEATURES + ["risk"]
     ).copy()
 
-    X = df[FEATURES]
-    y = df["risk"].astype(int)
+    df["risk"] = (
+        df["risk"]
+        .astype(int)
+    )
 
-    return X, y, df
+    return df
 
 
 # ============================================================
 # TRAIN MODEL
 # ============================================================
 
-def train_model(X, y):
-
-    print("\n================================")
-    print("REAL DATA MODEL TRAINING")
-    print("================================")
+def train_model(
+    dataset
+):
 
     print(
-        f"Total samples: {len(X)}"
+        "\n"
+        + "=" * 60
     )
 
-    print("\nClass distribution:")
+    print(
+        "REAL DATA MODEL TRAINING"
+    )
+
+    print(
+        "=" * 60
+    )
+
+    dataset = dataset.sort_values(
+        "date"
+    ).reset_index(
+        drop=True
+    )
+
+    X = dataset[
+        FEATURES
+    ]
+
+    y = dataset[
+        "risk"
+    ]
+
+    print(
+        f"Total samples: "
+        f"{len(dataset)}"
+    )
+
+    print(
+        "\nClass distribution:"
+    )
+
     print(
         y.value_counts()
         .sort_index()
     )
 
     if y.nunique() < 2:
+
         raise RuntimeError(
-            "Training requires at least "
-            "two classes."
+            "Training requires both "
+            "LOW and HIGH classes."
         )
 
     # --------------------------------------------------------
-    # Stratified split
+    # TIME-BASED SPLIT
+    #
+    # First 80% = train
+    # Last 20% = test
+    #
+    # This prevents future weather from entering training.
     # --------------------------------------------------------
 
-    X_train, X_test, y_train, y_test = train_test_split(
-        X,
-        y,
-        test_size=0.20,
-        random_state=42,
-        stratify=y
+    split_index = int(
+        len(dataset) * 0.80
     )
 
+    train_df = dataset.iloc[
+        :split_index
+    ]
+
+    test_df = dataset.iloc[
+        split_index:
+    ]
+
+    X_train = train_df[
+        FEATURES
+    ]
+
+    y_train = train_df[
+        "risk"
+    ]
+
+    X_test = test_df[
+        FEATURES
+    ]
+
+    y_test = test_df[
+        "risk"
+    ]
+
+    if y_train.nunique() < 2:
+
+        raise RuntimeError(
+            "Training split contains "
+            "only one class. "
+            "More historical flood data "
+            "is required."
+        )
+
+    if y_test.nunique() < 2:
+
+        print(
+            "\nWARNING:"
+            " Test period contains only "
+            "one class."
+        )
+
+    # --------------------------------------------------------
+    # MODEL
+    # --------------------------------------------------------
+
     model = RandomForestClassifier(
-        n_estimators=500,
-        max_depth=18,
+
+        n_estimators=700,
+
+        max_depth=20,
+
         min_samples_leaf=2,
+
         min_samples_split=4,
-        class_weight="balanced_subsample",
+
+        class_weight=(
+            "balanced_subsample"
+        ),
+
         random_state=42,
+
         n_jobs=-1,
+
+        max_features="sqrt",
+    )
+
+    print(
+        "\nTraining Random Forest..."
     )
 
     model.fit(
@@ -762,12 +1251,39 @@ def train_model(X, y):
     )
 
     # --------------------------------------------------------
-    # Evaluation
+    # PROBABILITY
     # --------------------------------------------------------
 
-    print("\n================================")
-    print("MODEL EVALUATION")
-    print("================================")
+    probabilities = (
+        model.predict_proba(
+            X_test
+        )
+    )
+
+    high_index = list(
+        model.classes_
+    ).index(2)
+
+    high_probability = (
+        probabilities[:, high_index]
+    )
+
+    # --------------------------------------------------------
+    # EVALUATION
+    # --------------------------------------------------------
+
+    print(
+        "\n"
+        + "=" * 60
+    )
+
+    print(
+        "MODEL EVALUATION"
+    )
+
+    print(
+        "=" * 60
+    )
 
     accuracy = accuracy_score(
         y_test,
@@ -775,22 +1291,26 @@ def train_model(X, y):
     )
 
     print(
-        f"Accuracy: {accuracy:.4f}"
+        f"Accuracy: "
+        f"{accuracy:.4f}"
     )
 
-    print("\nClassification report:")
+    print(
+        "\nClassification report:"
+    )
 
     print(
         classification_report(
             y_test,
             predictions,
             labels=[0, 2],
-            target_names=["LOW", "HIGH"],
+            target_names=[
+                "LOW",
+                "HIGH"
+            ],
             zero_division=0
         )
     )
-
-    print("Confusion matrix:")
 
     cm = confusion_matrix(
         y_test,
@@ -799,101 +1319,176 @@ def train_model(X, y):
     )
 
     print(
-        "             Pred LOW   Pred HIGH"
-    )
-    print(
-        f"Actual LOW      {cm[0][0]:>4}        {cm[0][1]:>4}"
-    )
-    print(
-        f"Actual HIGH     {cm[1][0]:>4}        {cm[1][1]:>4}"
+        "Confusion Matrix:"
     )
 
-    # --------------------------------------------------------
-    # Explicit flood metrics
-    # --------------------------------------------------------
+    print(
+        "              LOW   HIGH"
+    )
 
-    high_precision = precision_score(
+    print(
+        f"Actual LOW   "
+        f"{cm[0][0]:>4} "
+        f"{cm[0][1]:>6}"
+    )
+
+    print(
+        f"Actual HIGH  "
+        f"{cm[1][0]:>4} "
+        f"{cm[1][1]:>6}"
+    )
+
+    precision = precision_score(
         y_test,
         predictions,
         pos_label=2,
         zero_division=0
     )
 
-    high_recall = recall_score(
+    recall = recall_score(
         y_test,
         predictions,
         pos_label=2,
         zero_division=0
     )
 
-    high_f1 = f1_score(
+    f1 = f1_score(
         y_test,
         predictions,
         pos_label=2,
         zero_division=0
     )
 
-    print("\nHIGH / FLOOD METRICS:")
     print(
-        f"Precision: {high_precision:.4f}"
+        "\nFLOOD / HIGH METRICS"
     )
+
     print(
-        f"Recall:    {high_recall:.4f}"
+        f"Precision: {precision:.4f}"
     )
+
     print(
-        f"F1 Score:  {high_f1:.4f}"
+        f"Recall:    {recall:.4f}"
     )
+
+    print(
+        f"F1 Score:  {f1:.4f}"
+    )
+
+    # ROC-AUC only if test contains both classes
+    if y_test.nunique() == 2:
+
+        try:
+
+            auc = roc_auc_score(
+                (y_test == 2).astype(int),
+                high_probability
+            )
+
+            print(
+                f"ROC-AUC:   {auc:.4f}"
+            )
+
+        except Exception:
+
+            pass
 
     # --------------------------------------------------------
-    # Feature importance
+    # FEATURE IMPORTANCE
     # --------------------------------------------------------
 
-    print("\nFeature importance:")
-
-    importance = pd.Series(
-        model.feature_importances_,
-        index=FEATURES
-    ).sort_values(
-        ascending=False
+    print(
+        "\nFeature importance:"
     )
 
-    for feature, value in importance.items():
+    importance = (
+        pd.Series(
+            model.feature_importances_,
+            index=FEATURES
+        )
+        .sort_values(
+            ascending=False
+        )
+    )
+
+    for feature, value in (
+        importance.items()
+    ):
 
         print(
-            f"{feature}: {value:.4f}"
+            f"{feature:<30}"
+            f"{value:.4f}"
         )
 
     # --------------------------------------------------------
-    # Save model
+    # SAVE MODEL
     # --------------------------------------------------------
 
     model_package = {
+
         "model": model,
+
         "features": FEATURES,
+
         "classes": {
             0: "LOW",
             2: "HIGH"
         },
-        "version": "real-data-v2",
-        "trained_at": datetime.now().isoformat(),
+
+        "version": "real-data-v3",
+
+        "trained_at": (
+            datetime.now()
+            .isoformat()
+        ),
+
+        "training_start": (
+            f"{TRAINING_START_YEAR}-01-01"
+        ),
+
+        "training_end": (
+            TRAINING_END_DATE
+            .isoformat()
+        ),
+
+        "data_source": [
+            "India Flood Inventory (IFI)",
+            "Open-Meteo Historical Weather"
+        ],
+
+        "notes": (
+            "No synthetic flood events. "
+            "No synthetic weather. "
+            "Flood labels originate from IFI."
+        )
     }
 
     with open(
         MODEL_FILE,
         "wb"
-    ) as f:
+    ) as file:
 
         pickle.dump(
             model_package,
-            f
+            file
         )
 
-    print("\n================================")
-    print("REAL DATA DISASTER MODEL TRAINED")
-    print("================================")
+    print(
+        "\n"
+        + "=" * 60
+    )
 
     print(
-        f"Model saved at:\n{MODEL_FILE}"
+        "MODEL TRAINED SUCCESSFULLY"
+    )
+
+    print(
+        "=" * 60
+    )
+
+    print(
+        f"\nSaved:"
+        f"\n{MODEL_FILE}"
     )
 
     return model
@@ -905,10 +1500,33 @@ def train_model(X, y):
 
 def main():
 
-    print("==========================================")
-    print("DISASTER INTELLIGENCE PLATFORM")
-    print("IMPROVED REAL DATA ML TRAINING")
-    print("==========================================")
+    print(
+        "\n"
+        + "=" * 70
+    )
+
+    print(
+        "DISASTER INTELLIGENCE PLATFORM"
+    )
+
+    print(
+        "REAL DATA TRAINING V3"
+    )
+
+    print(
+        "=" * 70
+    )
+
+    print(
+        f"\nTraining period:"
+        f"\n{TRAINING_START_YEAR}-01-01"
+        f" -> "
+        f"{TRAINING_END_DATE}"
+    )
+
+    # --------------------------------------------------------
+    # Flood data
+    # --------------------------------------------------------
 
     flood_df = get_flood_data()
 
@@ -916,28 +1534,50 @@ def main():
         flood_df
     )
 
-    dataset = create_training_dataset(
-        flood_df
+    # --------------------------------------------------------
+    # Training dataset
+    # --------------------------------------------------------
+
+    dataset = (
+        create_training_dataset(
+            flood_df
+        )
     )
 
-    # Save complete training dataset
+    # --------------------------------------------------------
+    # Save raw training dataset
+    # --------------------------------------------------------
+
     dataset.to_csv(
         TRAINING_FILE,
         index=False
     )
 
-    print("\nTraining dataset saved:")
-    print(TRAINING_FILE)
+    print(
+        "\nTraining dataset saved:"
+    )
 
-    X, y, cleaned_dataset = prepare_features(
+    print(
+        TRAINING_FILE
+    )
+
+    # --------------------------------------------------------
+    # Clean features
+    # --------------------------------------------------------
+
+    dataset = prepare_features(
         dataset
     )
 
+    # --------------------------------------------------------
+    # Train
+    # --------------------------------------------------------
+
     train_model(
-        X,
-        y
+        dataset
     )
 
 
 if __name__ == "__main__":
+
     main()
