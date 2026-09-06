@@ -1649,9 +1649,14 @@ export default function DisasterDashboard() {
       `?latitude=${encodeURIComponent(latitudes)}` +
       `&longitude=${encodeURIComponent(longitudes)}` +
       `&current=temperature_2m,relative_humidity_2m,precipitation,rain,weather_code,wind_speed_10m` +
+      `&daily=precipitation_sum,rain_sum` +
+      `&forecast_days=1` +
       `&timezone=auto`;
 
-    console.log("🌦️ Open-Meteo request:", weatherUrl);
+    console.log(
+      "🌦️ Open-Meteo request:",
+      weatherUrl
+    );
 
     const weatherResponse = await fetch(weatherUrl);
 
@@ -1686,6 +1691,15 @@ export default function DisasterDashboard() {
       }
 
       const c = item.current || {};
+      const daily = item.daily || {};
+
+      const dailyPrecipitation = Number(
+        daily.precipitation_sum?.[0] ?? 0
+      );
+
+      const dailyRain = Number(
+        daily.rain_sum?.[0] ?? 0
+      );
 
       weatherById[district.id] = {
         current: {
@@ -1712,13 +1726,29 @@ export default function DisasterDashboard() {
           wind_speed: Number(
             c.wind_speed_10m ?? 0
           ),
+
+          // Today's accumulated rainfall
+          daily_precipitation:
+            dailyPrecipitation,
+
+          daily_rain:
+            dailyRain,
+        },
+
+        daily: {
+          precipitation_sum:
+            daily.precipitation_sum || [0],
+
+          rain_sum:
+            daily.rain_sum || [0],
         },
 
         latitude: item.latitude,
         longitude: item.longitude,
         timezone: item.timezone,
 
-        fetched_at: new Date().toISOString(),
+        fetched_at:
+          new Date().toISOString(),
       };
     });
 
@@ -1728,8 +1758,7 @@ export default function DisasterDashboard() {
     );
 
     // --------------------------------------------------
-    // STEP 4: Sequential ML requests
-    // One district at a time
+    // STEP 4: Sequential LIVE ML requests
     // --------------------------------------------------
 
     const nextWeather = {};
@@ -1749,90 +1778,95 @@ export default function DisasterDashboard() {
       const current =
         weatherData.current || {};
 
-     const inputs = {
-  latitude: Number(district.lat),
-  longitude: Number(district.lng),
-};
+      const inputs = {
+        latitude: Number(district.lat),
+        longitude: Number(district.lng),
+      };
 
-console.log(
-  `🤖 LIVE ML request for ${district.name}:`,
-  inputs
-);
+      console.log(
+        `🤖 LIVE ML request for ${district.name}:`,
+        inputs
+      );
 
-let mlPrediction = null;
+      let mlPrediction = null;
 
-try {
-  const mlResponse = await fetch(
-    `${API_BASE_URL}/api/ml/predict-risk`,
-    {
-      method: "POST",
+      try {
+        const mlResponse = await fetch(
+          `${API_BASE_URL}/api/ml/predict-risk`,
+          {
+            method: "POST",
 
-      headers: {
-        "Content-Type": "application/json",
-      },
+            headers: {
+              "Content-Type": "application/json",
+            },
 
-      body: JSON.stringify(inputs),
-    }
-  );
+            body: JSON.stringify(inputs),
+          }
+        );
 
-  if (!mlResponse.ok) {
-    const errorText = await mlResponse.text();
+        if (!mlResponse.ok) {
+          const errorText =
+            await mlResponse.text();
 
-    throw new Error(
-      `ML ${mlResponse.status}: ${errorText}`
-    );
-  }
+          throw new Error(
+            `ML ${mlResponse.status}: ${errorText}`
+          );
+        }
 
-  mlPrediction = await mlResponse.json();
+        mlPrediction =
+          await mlResponse.json();
 
-  console.log(
-    `✅ LIVE ML response for ${district.name}:`,
-    mlPrediction
-  );
+        console.log(
+          `✅ LIVE ML response for ${district.name}:`,
+          mlPrediction
+        );
 
-} catch (mlError) {
-  console.error(
-    `❌ LIVE ML failed for ${district.name}:`,
-    mlError
-  );
-}
+      } catch (mlError) {
+        console.error(
+          `❌ LIVE ML failed for ${district.name}:`,
+          mlError
+        );
+      }
 
-// ------------------------------------------------
-// IMPORTANT:
-// Weather is stored directly at the district level
-// so existing JSX can use:
-//
-// weather.current.temperature
-// weather.current.humidity
-// weather.current.rain
-// weather.current.wind_speed
-// ------------------------------------------------
+      // --------------------------------------------------
+      // DAILY RAINFALL
+      // --------------------------------------------------
 
-nextWeather[district.id] = {
-  ...weatherData,
+      const dailyPrecipitation = Number(
+        mlPrediction?.weather?.daily_precipitation ??
+        weatherData?.daily?.precipitation_sum?.[0] ??
+        0
+      );
 
-  ml: mlPrediction,
+      console.log(
+        `🌧️ Daily rainfall for ${district.name}:`,
+        dailyPrecipitation,
+        "mm"
+      );
 
-  ml_prediction: mlPrediction,
-
-  inputs,
-};
-      // ------------------------------------------------
-      // IMPORTANT:
-      // Weather is stored directly at the district level
-      // so existing JSX can use:
-      //
-      // weather.current.temperature
-      // weather.current.humidity
-      // weather.current.rain
-      // weather.current.wind_speed
-      // ------------------------------------------------
+      // --------------------------------------------------
+      // STORE WEATHER + LIVE ML
+      // --------------------------------------------------
 
       nextWeather[district.id] = {
         ...weatherData,
 
-        ml: mlPrediction,
+        current: {
+          ...current,
 
+          rain: Number(
+            current.rain ?? 0
+          ),
+
+          precipitation: Number(
+            current.precipitation ?? 0
+          ),
+
+          daily_precipitation:
+            dailyPrecipitation,
+        },
+
+        ml: mlPrediction,
         ml_prediction: mlPrediction,
 
         inputs,
@@ -1848,7 +1882,9 @@ nextWeather[district.id] = {
       nextWeather
     );
 
-    setWeatherByDistrict(nextWeather);
+    setWeatherByDistrict(
+      nextWeather
+    );
 
     if (
       Object.keys(nextWeather).length === 0
@@ -1866,7 +1902,7 @@ nextWeather[district.id] = {
 
     setWeatherError(
       error?.message ||
-        "Unable to load live weather."
+      "Unable to load live weather."
     );
 
   } finally {
@@ -2502,12 +2538,12 @@ nextWeather[district.id] = {
                           </span>
                         </div>
                         <div className="text-xl font-bold text-slate-200 mt-2">
-                          {current.rain != null
-                            ? `${current.rain} mm`
-                            : current.precipitation != null
-                            ? `${current.precipitation} mm`
-                            : "--"}
-                        </div>
+  {current.daily_precipitation != null
+    ? `${Number(current.daily_precipitation).toFixed(1)} mm`
+    : current.precipitation != null
+    ? `${Number(current.precipitation).toFixed(1)} mm`
+    : "--"}
+</div>
                       </div>
 
                       <div className="rounded-xl border border-slate-800 bg-slate-950/30 p-3">
