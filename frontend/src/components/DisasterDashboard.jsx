@@ -1609,7 +1609,7 @@ export default function DisasterDashboard() {
      LIVE WEATHER + DYNAMIC MAP RISK
   ===================================================== */
 
- const loadWeather = useCallback(async (districtList) => {
+const loadWeather = useCallback(async (districtList) => {
   if (!Array.isArray(districtList) || districtList.length === 0) {
     return;
   }
