@@ -1610,7 +1610,10 @@ export default function DisasterDashboard() {
   ===================================================== */
 
 const loadWeather = useCallback(async (districtList) => {
-  if (!Array.isArray(districtList) || districtList.length === 0) {
+  if (
+    !Array.isArray(districtList) ||
+    districtList.length === 0
+  ) {
     return;
   }
 
@@ -1618,9 +1621,11 @@ const loadWeather = useCallback(async (districtList) => {
   setWeatherError("");
 
   try {
-    // --------------------------------------------------
-    // STEP 1: Valid district coordinates
-    // --------------------------------------------------
+    // ==================================================
+    // 1. VALID DISTRICTS
+    // IMPORTANT:
+    // Your project uses lat / lng
+    // ==================================================
 
     const validDistricts = districtList.filter(
       (district) =>
@@ -1629,19 +1634,25 @@ const loadWeather = useCallback(async (districtList) => {
     );
 
     if (validDistricts.length === 0) {
-      throw new Error("No valid district coordinates.");
+      throw new Error(
+        "No valid district coordinates found."
+      );
     }
 
-    // --------------------------------------------------
-    // STEP 2: ONE Open-Meteo request for all districts
-    // --------------------------------------------------
+    // ==================================================
+    // 2. ONE OPEN-METEO REQUEST FOR ALL DISTRICTS
+    // ==================================================
 
     const latitudes = validDistricts
-      .map((district) => Number(district.lat).toFixed(4))
+      .map((district) =>
+        Number(district.lat).toFixed(4)
+      )
       .join(",");
 
     const longitudes = validDistricts
-      .map((district) => Number(district.lng).toFixed(4))
+      .map((district) =>
+        Number(district.lng).toFixed(4)
+      )
       .join(",");
 
     const weatherUrl =
@@ -1649,9 +1660,10 @@ const loadWeather = useCallback(async (districtList) => {
       `?latitude=${encodeURIComponent(latitudes)}` +
       `&longitude=${encodeURIComponent(longitudes)}` +
       `&current=temperature_2m,relative_humidity_2m,precipitation,rain,weather_code,wind_speed_10m` +
-      `&daily=precipitation_sum,rain_sum` +
+      `&hourly=rain,precipitation` +
+      `&past_days=1` +
       `&forecast_days=1` +
-      `&timezone=auto`;
+      `&timezone=Asia%2FKolkata`;
 
     console.log(
       "🌦️ Open-Meteo request:",
@@ -1666,143 +1678,409 @@ const loadWeather = useCallback(async (districtList) => {
       );
     }
 
-    const weatherPayload = await weatherResponse.json();
+    const weatherPayload =
+      await weatherResponse.json();
 
     console.log(
       "🌦️ Open-Meteo response:",
       weatherPayload
     );
 
-    const weatherItems = Array.isArray(weatherPayload)
+    // Open-Meteo:
+    // multiple locations = array
+    // single location = object
+    const weatherItems = Array.isArray(
+      weatherPayload
+    )
       ? weatherPayload
       : [weatherPayload];
 
-    // --------------------------------------------------
-    // STEP 3: Map Open-Meteo response to district ID
-    // --------------------------------------------------
+    // ==================================================
+    // 3. INDIA DATE
+    // ==================================================
+
+    const now = new Date();
+
+    const indiaDateFormatter =
+      new Intl.DateTimeFormat("en-CA", {
+        timeZone: "Asia/Kolkata",
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+      });
+
+    const todayDate =
+      indiaDateFormatter.format(now);
+
+    const yesterdayDate =
+      indiaDateFormatter.format(
+        new Date(
+          now.getTime() -
+            24 * 60 * 60 * 1000
+        )
+      );
+
+    console.log(
+      "📅 Today:",
+      todayDate,
+      "Previous:",
+      yesterdayDate
+    );
+
+    // ==================================================
+    // 4. WEATHER DATA BY DISTRICT
+    // ==================================================
 
     const weatherById = {};
 
-    validDistricts.forEach((district, index) => {
-      const item = weatherItems[index];
+    validDistricts.forEach(
+      (district, index) => {
+        const item =
+          weatherItems[index];
 
-      if (!item) {
-        return;
+        if (!item) {
+          console.warn(
+            `⚠️ No Open-Meteo data for ${district.name}`
+          );
+          return;
+        }
+
+        const current =
+          item.current || {};
+
+        const hourly =
+          item.hourly || {};
+
+        const hourlyTimes =
+          Array.isArray(hourly.time)
+            ? hourly.time
+            : [];
+
+        const hourlyRain =
+          Array.isArray(hourly.rain)
+            ? hourly.rain
+            : [];
+
+        const hourlyPrecipitation =
+          Array.isArray(
+            hourly.precipitation
+          )
+            ? hourly.precipitation
+            : [];
+
+        // ==================================================
+        // 5. TODAY RAIN
+        // Midnight -> CURRENT TIME
+        //
+        // NO daily.rain_sum
+        // NO full-day forecast
+        // ==================================================
+
+        let todayRain = 0;
+        let todayPrecipitation = 0;
+
+        // ==================================================
+        // 6. PREVIOUS DAY RAIN
+        // FULL PREVIOUS DAY
+        // ==================================================
+
+        let previousDayRain = 0;
+        let previousDayPrecipitation = 0;
+
+        hourlyTimes.forEach(
+          (timeString, hourIndex) => {
+            if (!timeString) {
+              return;
+            }
+
+            const datePart =
+              String(timeString).slice(
+                0,
+                10
+              );
+
+            const rainValue =
+              Number(
+                hourlyRain[hourIndex]
+              );
+
+            const precipitationValue =
+              Number(
+                hourlyPrecipitation[
+                  hourIndex
+                ]
+              );
+
+            // ------------------------------------------
+            // PREVIOUS DAY
+            // ------------------------------------------
+
+            if (
+              datePart ===
+              yesterdayDate
+            ) {
+              if (
+                Number.isFinite(
+                  rainValue
+                )
+              ) {
+                previousDayRain +=
+                  rainValue;
+              }
+
+              if (
+                Number.isFinite(
+                  precipitationValue
+                )
+              ) {
+                previousDayPrecipitation +=
+                  precipitationValue;
+              }
+            }
+
+            // ------------------------------------------
+            // TODAY
+            // ONLY UNTIL CURRENT TIME
+            // ------------------------------------------
+
+            if (
+              datePart ===
+              todayDate
+            ) {
+              const hourDate =
+                new Date(
+                  `${timeString}:00+05:30`
+                );
+
+              if (
+                hourDate <= now
+              ) {
+                if (
+                  Number.isFinite(
+                    rainValue
+                  )
+                ) {
+                  todayRain +=
+                    rainValue;
+                }
+
+                if (
+                  Number.isFinite(
+                    precipitationValue
+                  )
+                ) {
+                  todayPrecipitation +=
+                    precipitationValue;
+                }
+              }
+            }
+          }
+        );
+
+        // ==================================================
+        // 7. CURRENT WEATHER
+        // ==================================================
+
+        const currentWeather = {
+          temperature:
+            Number.isFinite(
+              Number(
+                current.temperature_2m
+              )
+            )
+              ? Number(
+                  current.temperature_2m
+                )
+              : null,
+
+          humidity:
+            Number.isFinite(
+              Number(
+                current.relative_humidity_2m
+              )
+            )
+              ? Number(
+                  current.relative_humidity_2m
+                )
+              : null,
+
+          precipitation:
+            Number.isFinite(
+              Number(
+                current.precipitation
+              )
+            )
+              ? Number(
+                  current.precipitation
+                )
+              : null,
+
+          // CURRENT RAIN
+          // This is NOT daily total.
+          rain:
+            Number.isFinite(
+              Number(current.rain)
+            )
+              ? Number(current.rain)
+              : null,
+
+          wind_speed:
+            Number.isFinite(
+              Number(
+                current.wind_speed_10m
+              )
+            )
+              ? Number(
+                  current.wind_speed_10m
+                )
+              : null,
+
+          weather_code:
+            Number.isFinite(
+              Number(
+                current.weather_code
+              )
+            )
+              ? Number(
+                  current.weather_code
+                )
+              : null,
+
+          // ------------------------------------------
+          // TODAY
+          // ------------------------------------------
+
+          today_rain:
+            Number.isFinite(
+              todayRain
+            )
+              ? Number(
+                  todayRain.toFixed(2)
+                )
+              : null,
+
+          today_precipitation:
+            Number.isFinite(
+              todayPrecipitation
+            )
+              ? Number(
+                  todayPrecipitation.toFixed(2)
+                )
+              : null,
+
+          // ------------------------------------------
+          // PREVIOUS DAY
+          // ------------------------------------------
+
+          previous_day_rain:
+            Number.isFinite(
+              previousDayRain
+            )
+              ? Number(
+                  previousDayRain.toFixed(2)
+                )
+              : null,
+
+          previous_day_precipitation:
+            Number.isFinite(
+              previousDayPrecipitation
+            )
+              ? Number(
+                  previousDayPrecipitation.toFixed(
+                    2
+                  )
+                )
+              : null,
+
+          today_date:
+            todayDate,
+
+          previous_day_date:
+            yesterdayDate,
+        };
+
+        // ==================================================
+        // 8. SAVE WEATHER
+        // ==================================================
+
+        weatherById[district.id] = {
+          current: currentWeather,
+
+          latitude:
+            Number(district.lat),
+
+          longitude:
+            Number(district.lng),
+
+          timezone:
+            item.timezone ||
+            "Asia/Kolkata",
+
+          fetched_at:
+            new Date().toISOString(),
+        };
       }
-
-      const c = item.current || {};
-      const daily = item.daily || {};
-
-      const dailyPrecipitation = Number(
-        daily.precipitation_sum?.[0] ?? 0
-      );
-
-      const dailyRain = Number(
-        daily.rain_sum?.[0] ?? 0
-      );
-
-      weatherById[district.id] = {
-        current: {
-          temperature: Number(
-            c.temperature_2m ?? 0
-          ),
-
-          humidity: Number(
-            c.relative_humidity_2m ?? 0
-          ),
-
-          precipitation: Number(
-            c.precipitation ?? 0
-          ),
-
-          rain: Number(
-            c.rain ?? 0
-          ),
-
-          weather_code: Number(
-            c.weather_code ?? 0
-          ),
-
-          wind_speed: Number(
-            c.wind_speed_10m ?? 0
-          ),
-
-          // Today's accumulated rainfall
-          daily_precipitation:
-            dailyPrecipitation,
-
-          daily_rain:
-            dailyRain,
-        },
-
-        daily: {
-          precipitation_sum:
-            daily.precipitation_sum || [0],
-
-          rain_sum:
-            daily.rain_sum || [0],
-        },
-
-        latitude: item.latitude,
-        longitude: item.longitude,
-        timezone: item.timezone,
-
-        fetched_at:
-          new Date().toISOString(),
-      };
-    });
+    );
 
     console.log(
       "🌦️ Weather by district:",
       weatherById
     );
 
-    // --------------------------------------------------
-    // STEP 4: Sequential LIVE ML requests
-    // --------------------------------------------------
+    // ==================================================
+    // 9. V3 ML
+    //
+    // IMPORTANT:
+    // V3 backend only wants:
+    // latitude + longitude
+    // ==================================================
 
     const nextWeather = {};
 
-    for (const district of validDistricts) {
+    for (
+      const district of validDistricts
+    ) {
       const weatherData =
         weatherById[district.id];
 
       if (!weatherData) {
-        console.warn(
-          `⚠️ No weather data for ${district.name}`
-        );
-
         continue;
       }
-
-      const current =
-        weatherData.current || {};
-
-      const inputs = {
-        latitude: Number(district.lat),
-        longitude: Number(district.lng),
-      };
-
-      console.log(
-        `🤖 LIVE ML request for ${district.name}:`,
-        inputs
-      );
 
       let mlPrediction = null;
 
       try {
-        const mlResponse = await fetch(
-          `${API_BASE_URL}/api/ml/predict-risk`,
+        console.log(
+          `🤖 ML request for ${district.name}:`,
           {
-            method: "POST",
+            latitude:
+              Number(district.lat),
 
-            headers: {
-              "Content-Type": "application/json",
-            },
-
-            body: JSON.stringify(inputs),
+            longitude:
+              Number(district.lng),
           }
         );
+
+        const mlResponse =
+          await fetch(
+            `${API_BASE_URL}/api/ml/predict-risk`,
+            {
+              method: "POST",
+
+              headers: {
+                "Content-Type":
+                  "application/json",
+              },
+
+              body: JSON.stringify({
+                latitude:
+                  Number(district.lat),
+
+                longitude:
+                  Number(district.lng),
+              }),
+            }
+          );
 
         if (!mlResponse.ok) {
           const errorText =
@@ -1817,65 +2095,37 @@ const loadWeather = useCallback(async (districtList) => {
           await mlResponse.json();
 
         console.log(
-          `✅ LIVE ML response for ${district.name}:`,
+          `✅ ML response for ${district.name}:`,
           mlPrediction
         );
-
       } catch (mlError) {
         console.error(
-          `❌ LIVE ML failed for ${district.name}:`,
+          `❌ ML failed for ${district.name}:`,
           mlError
         );
       }
 
-      // --------------------------------------------------
-      // DAILY RAINFALL
-      // --------------------------------------------------
-
-      const dailyPrecipitation = Number(
-        mlPrediction?.weather?.daily_precipitation ??
-        weatherData?.daily?.precipitation_sum?.[0] ??
-        0
-      );
-
-      console.log(
-        `🌧️ Daily rainfall for ${district.name}:`,
-        dailyPrecipitation,
-        "mm"
-      );
-
-      // --------------------------------------------------
-      // STORE WEATHER + LIVE ML
-      // --------------------------------------------------
+      // ==================================================
+      // FINAL OBJECT
+      // ==================================================
 
       nextWeather[district.id] = {
         ...weatherData,
 
-        current: {
-          ...current,
-
-          rain: Number(
-            current.rain ?? 0
-          ),
-
-          precipitation: Number(
-            current.precipitation ?? 0
-          ),
-
-          daily_precipitation:
-            dailyPrecipitation,
-        },
+        // IMPORTANT:
+        // applyMLRisk() expects weather
+        weather: weatherData,
 
         ml: mlPrediction,
-        ml_prediction: mlPrediction,
 
-        inputs,
+        ml_prediction:
+          mlPrediction,
       };
     }
 
-    // --------------------------------------------------
-    // STEP 5: Save final dashboard weather
-    // --------------------------------------------------
+    // ==================================================
+    // 10. SAVE FINAL WEATHER
+    // ==================================================
 
     console.log(
       "🔥 FINAL DASHBOARD WEATHER:",
@@ -1887,13 +2137,13 @@ const loadWeather = useCallback(async (districtList) => {
     );
 
     if (
-      Object.keys(nextWeather).length === 0
+      Object.keys(nextWeather)
+        .length === 0
     ) {
       setWeatherError(
         "Live weather service unavailable."
       );
     }
-
   } catch (error) {
     console.error(
       "❌ Weather synchronization failed:",
@@ -1902,13 +2152,11 @@ const loadWeather = useCallback(async (districtList) => {
 
     setWeatherError(
       error?.message ||
-      "Unable to load live weather."
+        "Unable to load live weather."
     );
-
   } finally {
     setWeatherLoading(false);
   }
-
 }, []);
   /* =====================================================
      LOAD DASHBOARD
@@ -2515,59 +2763,128 @@ const loadWeather = useCallback(async (districtList) => {
 
                 return (
                   <>
-                    <div className="grid grid-cols-2 gap-3">
-                      <div className="rounded-xl border border-slate-800 bg-slate-950/30 p-3">
-                        <div className="flex items-center gap-2 text-slate-500">
-                          <Thermometer className="w-3.5 h-3.5" />
-                          <span className="text-[9px]">
-                            Temperature
-                          </span>
-                        </div>
-                        <div className="text-xl font-bold text-slate-200 mt-2">
-                          {current.temperature != null
-                            ? `${current.temperature}°C`
-                            : "--"}
-                        </div>
-                      </div>
+                  <div className="grid grid-cols-2 gap-3">
 
-                      <div className="rounded-xl border border-slate-800 bg-slate-950/30 p-3">
-                        <div className="flex items-center gap-2 text-slate-500">
-                          <CloudRain className="w-3.5 h-3.5" />
-                          <span className="text-[9px]">
-                            Rainfall
-                          </span>
-                        </div>
-                        <div className="text-xl font-bold text-slate-200 mt-2">
-  {current.daily_precipitation != null
-    ? `${Number(current.daily_precipitation).toFixed(1)} mm`
-    : current.precipitation != null
-    ? `${Number(current.precipitation).toFixed(1)} mm`
-    : "--"}
+  {/* TEMPERATURE */}
+  <div className="rounded-xl border border-slate-800 bg-slate-950/30 p-3">
+    <div className="flex items-center gap-2 text-slate-500">
+      <Thermometer className="w-3.5 h-3.5" />
+
+      <span className="text-[9px]">
+        Temperature
+      </span>
+    </div>
+
+    <div className="text-xl font-bold text-slate-200 mt-2">
+      {Number.isFinite(
+        Number(current?.temperature)
+      )
+        ? `${Number(current.temperature).toFixed(1)}°C`
+        : "--"}
+    </div>
+  </div>
+
+
+  {/* TODAY RAIN */}
+  <div className="rounded-xl border border-slate-800 bg-slate-950/30 p-3">
+    <div className="flex items-center gap-2 text-slate-500">
+      <CloudRain className="w-3.5 h-3.5" />
+
+      <span className="text-[9px]">
+        Rainfall · Today
+      </span>
+    </div>
+
+    <div className="text-xl font-bold text-slate-200 mt-2">
+      {Number.isFinite(
+        Number(current?.today_rain)
+      )
+        ? `${Number(current.today_rain).toFixed(1)} mm`
+        : "--"}
+    </div>
+  </div>
+
+
+  {/* PREVIOUS DAY */}
+  <div className="rounded-xl border border-slate-800 bg-slate-950/30 p-3">
+    <div className="flex items-center gap-2 text-slate-500">
+      <CloudRain className="w-3.5 h-3.5" />
+
+      <span className="text-[9px]">
+        Previous Day
+      </span>
+    </div>
+
+    <div className="text-xl font-bold text-slate-200 mt-2">
+      {Number.isFinite(
+        Number(current?.previous_day_rain)
+      )
+        ? `${Number(current.previous_day_rain).toFixed(1)} mm`
+        : "--"}
+    </div>
+  </div>
+
+
+  {/* CURRENT RAIN */}
+  <div className="rounded-xl border border-slate-800 bg-slate-950/30 p-3">
+    <div className="flex items-center gap-2 text-slate-500">
+      <CloudRain className="w-3.5 h-3.5" />
+
+      <span className="text-[9px]">
+        Rain · Current
+      </span>
+    </div>
+
+    <div className="text-xl font-bold text-slate-200 mt-2">
+      {Number.isFinite(
+        Number(current?.rain)
+      )
+        ? `${Number(current.rain).toFixed(1)} mm`
+        : "--"}
+    </div>
+  </div>
+
+
+  {/* HUMIDITY */}
+  <div className="rounded-xl border border-slate-800 bg-slate-950/30 p-3">
+    <div className="flex items-center gap-2 text-slate-500">
+      <CloudRain className="w-3.5 h-3.5" />
+
+      <span className="text-[9px]">
+        Humidity
+      </span>
+    </div>
+
+    <div className="text-xl font-bold text-slate-200 mt-2">
+      {Number.isFinite(
+        Number(current?.humidity)
+      )
+        ? `${Number(current.humidity).toFixed(0)}%`
+        : "--"}
+    </div>
+  </div>
+
+
+  {/* WIND */}
+  <div className="rounded-xl border border-slate-800 bg-slate-950/30 p-3">
+    <div className="flex items-center gap-2 text-slate-500">
+      <Navigation className="w-3.5 h-3.5" />
+
+      <span className="text-[9px]">
+        Wind
+      </span>
+    </div>
+
+    <div className="text-xl font-bold text-slate-200 mt-2">
+      {Number.isFinite(
+        Number(current?.wind_speed)
+      )
+        ? `${Number(current.wind_speed).toFixed(1)} km/h`
+        : "--"}
+    </div>
+  </div>
+
 </div>
-                      </div>
-
-                      <div className="rounded-xl border border-slate-800 bg-slate-950/30 p-3">
-                        <div className="text-[9px] text-slate-500">
-                          Humidity
-                        </div>
-                        <div className="text-xl font-bold text-slate-200 mt-2">
-                          {current.humidity != null
-                            ? `${current.humidity}%`
-                            : "--"}
-                        </div>
-                      </div>
-
-                      <div className="rounded-xl border border-slate-800 bg-slate-950/30 p-3">
-                        <div className="text-[9px] text-slate-500">
-                          Wind
-                        </div>
-                        <div className="text-xl font-bold text-slate-200 mt-2">
-                          {current.wind_speed != null
-                            ? `${current.wind_speed} km/h`
-                            : "--"}
-                        </div>
-                      </div>
-                    </div>
 
                     <div className="mt-3 flex items-center justify-between rounded-xl border border-slate-800 bg-slate-950/30 px-3 py-2">
                       <span className="text-[9px] text-slate-500">
