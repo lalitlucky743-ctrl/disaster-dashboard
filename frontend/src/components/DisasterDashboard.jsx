@@ -70,7 +70,7 @@ const DEFAULT_ZOOM = 7;
 // Backend API used for live weather data.
 const API_BASE_URL =
   import.meta.env.VITE_API_URL ||
-  "https://disaster-dashboard-g95h.onrender.com";
+  "https://disaster-dashboard-kgbb.onrender.com";
 const TAB_CONFIG = [
   {
     id: "Dashboard",
