@@ -6,8 +6,17 @@ from zoneinfo import ZoneInfo
 import numpy as np
 import pandas as pd
 import requests
-import rasterio
-from rasterio.windows import Window
+
+# Rasterio is optional at runtime. Render containers may not provide the
+# native GEOS/PROJ/expat libraries required by the rasterio wheel.
+# When rasterio is unavailable, the predictor uses the real Copernicus
+# GLO-90 elevation fallback through Open-Meteo instead of failing startup.
+try:
+    import rasterio
+    from rasterio.windows import Window
+except (ImportError, OSError):
+    rasterio = None
+    Window = None
 
 
 # ============================================================
@@ -118,6 +127,12 @@ def load_model():
 # ============================================================
 
 def load_dem():
+    if rasterio is None:
+        raise RuntimeError(
+            "Rasterio is unavailable in this runtime; using the real "
+            "Copernicus GLO-90 elevation fallback instead."
+        )
+
     if not os.path.exists(DEM_PATH):
         raise FileNotFoundError(
             "Landslide DEM not found: "
@@ -381,6 +396,13 @@ def extract_dem_features(latitude, longitude):
     """Extract real terrain features, using supplied DEM first and GLO-90 as a real-data fallback."""
     latitude = float(latitude)
     longitude = float(longitude)
+
+    # Render may not have rasterio's native shared libraries, and the DEM is
+    # intentionally not required in the deployment image. In either case,
+    # use the real Copernicus GLO-90 point/grid fallback. No synthetic terrain
+    # values are introduced.
+    if rasterio is None or not os.path.exists(DEM_PATH):
+        return _fetch_copernicus_glo90_terrain(latitude, longitude)
 
     with load_dem() as dem:
         row, col = dem.index(longitude, latitude)
