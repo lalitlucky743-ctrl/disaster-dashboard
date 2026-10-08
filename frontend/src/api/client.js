@@ -26,6 +26,27 @@ function clearAuth() {
    API REQUEST
 ========================================================= */
 
+// Render's free tier spins the backend down when idle, and a cold start
+// can take 30-60s. The previous plain `fetch` here had no timeout at all,
+// so a cold-starting AI/ML call would just hang forever with no error and
+// no feedback (spinner stuck). We now:
+//   1. Bound every request with a generous timeout (so it eventually
+//      surfaces a clear error instead of hanging silently).
+//   2. Retry once automatically if the failure looks like a timeout,
+//      since the first call is often what wakes the backend up.
+const REQUEST_TIMEOUT_MS = 45000;
+
+async function fetchWithTimeout(url, options, timeout = REQUEST_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeout);
+
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function request(endpoint, options = {}) {
   const token = getAccessToken();
 
@@ -41,16 +62,38 @@ async function request(endpoint, options = {}) {
   }
 
   let response;
+  let attempt = 0;
+  const maxAttempts = 2;
 
-  try {
-    response = await fetch(`${API_BASE_URL}${endpoint}`, {
-      ...options,
-      headers,
-    });
-  } catch (error) {
-    throw new Error(
-      "Unable to connect to the Disaster Intelligence backend."
-    );
+  while (attempt < maxAttempts) {
+    attempt += 1;
+
+    try {
+      console.log(`📡 API request (attempt ${attempt}/${maxAttempts}): ${options.method || "GET"} ${endpoint}`);
+
+      response = await fetchWithTimeout(`${API_BASE_URL}${endpoint}`, {
+        ...options,
+        headers,
+      });
+
+      break; // success, exit retry loop
+    } catch (error) {
+      const isTimeout = error?.name === "AbortError";
+
+      console.warn(
+        `⚠️ API request failed (attempt ${attempt}/${maxAttempts}): ${endpoint}`,
+        isTimeout ? "Timed out (backend may be cold-starting on Render)" : error
+      );
+
+      if (attempt >= maxAttempts) {
+        throw new Error(
+          isTimeout
+            ? "The backend took too long to respond (it may be waking up from sleep). Please try again in a few seconds."
+            : "Unable to connect to the Disaster Intelligence backend."
+        );
+      }
+      // else: loop again for one retry
+    }
   }
 
   /* =======================================================
@@ -118,8 +161,12 @@ async function request(endpoint, options = {}) {
           data?.message ||
           `Request failed with status ${response.status}`;
 
+    console.error(`❌ API error ${response.status} on ${endpoint}:`, data);
+
     throw new Error(message);
   }
+
+  console.log(`✅ API success: ${endpoint}`, data);
 
   return data;
 }
