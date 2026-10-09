@@ -70,7 +70,10 @@ const LANDSLIDE_ML_REQUEST_GAP_MS = 15 * 60 * 1000;
 // each request completes instead of waiting for all districts.
 const ML_CONCURRENCY = 3;
 const LANDSLIDE_ML_CONCURRENCY = 3;
-const ML_FETCH_TIMEOUT_MS = 20000;
+const ML_FETCH_TIMEOUT_MS = 45000;
+const LOCATION_ML_CONCURRENCY = 2;
+const LOCATION_FLOOD_ML_CACHE_KEY = "disaster-dashboard:location-flood-ml:last-good-v63";
+const LOCATION_LANDSLIDE_ML_CACHE_KEY = "disaster-dashboard:location-landslide-ml:last-good-v3";
 const ML_CACHE_TTL_MS = 10 * 60 * 1000;
 const LANDSLIDE_ML_CACHE_TTL_MS = 15 * 60 * 1000;
 const FLOOD_ML_CACHE_KEY = "disaster-dashboard:flood-ml:last-good-v63";
@@ -654,6 +657,35 @@ function mapToCacheItems(map) {
   return items;
 }
 
+function isFreshPredictionCacheEntry(entry, ttlMs) {
+  if (!entry?.prediction || !entry?.updatedAt) return false;
+  const updatedAt = new Date(entry.updatedAt).getTime();
+  return Number.isFinite(updatedAt) && Date.now() - updatedAt < ttlMs;
+}
+
+function runWithConcurrency(queueRef, limit, task) {
+  return new Promise((resolve, reject) => {
+    const queue = queueRef.current;
+    queue.pending.push({ task, resolve, reject });
+
+    const pump = () => {
+      while (queue.active < limit && queue.pending.length) {
+        const next = queue.pending.shift();
+        queue.active += 1;
+        Promise.resolve()
+          .then(next.task)
+          .then(next.resolve, next.reject)
+          .finally(() => {
+            queue.active -= 1;
+            pump();
+          });
+      }
+    };
+
+    pump();
+  });
+}
+
 function isTrustedLandslidePrediction(prediction) {
   if (!prediction || typeof prediction !== "object") return false;
   const version = String(prediction.model_version ?? prediction.version ?? "").trim().toLowerCase();
@@ -693,7 +725,7 @@ function getWeatherSignal(weatherData) {
     return {
       kind: "now",
       severity: "WARNING",
-      text: "बारिश हो रही है",
+      text: "पिछले घंटे में वर्षा दर्ज हुई",
     };
   }
 
@@ -733,7 +765,7 @@ function formatRainNumbers(weatherData) {
   const todayProbability = toFiniteNumber(current.today_max_probability);
   const tomorrowProbability = toFiniteNumber(current.tomorrow_max_probability);
 
-  if (currentRain !== null) bits.push(`अभी ${currentRain.toFixed(1)} mm`);
+  if (currentRain !== null) bits.push(`पिछले घंटे ${currentRain.toFixed(1)} mm`);
   if (todayRain !== null) bits.push(`आज ${todayRain.toFixed(1)} mm`);
   if (todayProbability !== null) bits.push(`आज ${Math.round(todayProbability)}%`);
   if (tomorrowProbability !== null) bits.push(`कल ${Math.round(tomorrowProbability)}%`);
@@ -942,25 +974,49 @@ function buildCurrentWeather(item) {
   const todayKey = dateKey(today);
   const yesterdayKey = dateKey(new Date(today.getTime() - 86400000));
   const tomorrowKey = dateKey(new Date(today.getTime() + 86400000));
+  const fallbackHour = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Asia/Kolkata",
+    hour: "2-digit",
+    hourCycle: "h23",
+  }).format(today);
+  // Open-Meteo's rain/precipitation current values are preceding-hour totals,
+  // not an instantaneous rain-rate. Use its current timestamp to exclude
+  // future forecast hours from the "Rainfall · Today" accumulated value.
+  const currentHourKey =
+    String(current.time || "").slice(0, 13) || `${todayKey}T${fallbackHour}`;
 
   let todayRain = 0;
+  let todayRainSamples = 0;
   let yesterdayRain = 0;
+  let yesterdayRainSamples = 0;
   let todayMaxProbability = null;
   let tomorrowMaxProbability = null;
 
   times.forEach((rawTime, index) => {
-    const time = new Date(rawTime);
-    if (!Number.isFinite(time.getTime())) return;
+    const timeKey = String(rawTime || "");
+    if (timeKey.length < 10) return;
 
-    const key = rawTime.slice(0, 10);
+    const key = timeKey.slice(0, 10);
+    const hourKey = timeKey.slice(0, 13);
     const rainValue = toFiniteNumber(rain[index]);
     const precipitationValue = toFiniteNumber(precipitation[index]);
-    const value = rainValue ?? precipitationValue;
+    // Total precipitation includes rain and showers. Prefer it over the
+    // narrower rain-only field to avoid under-reporting precipitation.
+    const values = [rainValue, precipitationValue].filter((value) => value !== null);
+    const hourlyPrecipitation = values.length ? Math.max(...values) : null;
     const probabilityValue = toFiniteNumber(probability[index]);
 
-    if (key === todayKey && value !== null) todayRain += Math.max(0, value);
-    if (key === yesterdayKey && value !== null) {
-      yesterdayRain += Math.max(0, value);
+    if (
+      key === todayKey &&
+      hourKey <= currentHourKey &&
+      hourlyPrecipitation !== null
+    ) {
+      todayRain += Math.max(0, hourlyPrecipitation);
+      todayRainSamples += 1;
+    }
+    if (key === yesterdayKey && hourlyPrecipitation !== null) {
+      yesterdayRain += Math.max(0, hourlyPrecipitation);
+      yesterdayRainSamples += 1;
     }
     if (key === todayKey && probabilityValue !== null) {
       todayMaxProbability =
@@ -976,15 +1032,25 @@ function buildCurrentWeather(item) {
     }
   });
 
+  const currentRainOnly = toFiniteNumber(current.rain);
+  const currentPrecipitation = toFiniteNumber(current.precipitation);
+  const lastHourPrecipitation =
+    currentRainOnly !== null && currentPrecipitation !== null
+      ? Math.max(currentRainOnly, currentPrecipitation)
+      : currentPrecipitation ?? currentRainOnly;
+
   return {
     temperature: current.temperature_2m,
     humidity: current.relative_humidity_2m,
-    precipitation: current.precipitation,
-    rain: current.rain,
+    precipitation: currentPrecipitation,
+    // Kept as `rain` for the existing rain signals/cards, but the displayed
+    // value is the more complete preceding-hour total when available.
+    rain: lastHourPrecipitation,
+    rain_only: currentRainOnly,
     wind_speed: current.wind_speed_10m,
     weather_code: current.weather_code,
-    today_rain: todayRain,
-    previous_day_rain: yesterdayRain,
+    today_rain: todayRainSamples ? Number(todayRain.toFixed(1)) : null,
+    previous_day_rain: yesterdayRainSamples ? Number(yesterdayRain.toFixed(1)) : null,
     today_max_probability: todayMaxProbability,
     tomorrow_max_probability: tomorrowMaxProbability,
   };
@@ -1005,7 +1071,7 @@ function buildWeatherBulletins(districts, weatherByDistrict) {
 
     let message = "";
     if (signal.kind === "now") {
-      message = `${district.name} में अभी ${nowRain?.toFixed(1) ?? "—"} mm rain दर्ज है।`;
+      message = `${district.name} में पिछले घंटे ${nowRain?.toFixed(1) ?? "—"} mm precipitation दर्ज हुई।`;
     } else if (signal.kind === "today") {
       message = `${district.name} में आज वर्षा की अधिकतम संभावना ${Math.round(
         todayProbability ?? 0
@@ -1338,6 +1404,41 @@ function MapClickCapture() {
   return null;
 }
 
+function VisibleLocationPrefetch({ districts, zoom, onPrefetch }) {
+  const map = useMap();
+
+  useEffect(() => {
+    if (zoom < 9 || typeof onPrefetch !== "function") return undefined;
+
+    const prefetchVisible = () => {
+      if (map.getZoom() < 9) return;
+      const bounds = map.getBounds();
+      const visible = [];
+
+      (districts || []).forEach((district) => {
+        (district.locations || []).forEach((location) => {
+          const lat = toFiniteNumber(location.lat);
+          const lng = toFiniteNumber(location.lng);
+          if (lat === null || lng === null || !bounds.contains([lat, lng])) return;
+          visible.push({ location, district });
+        });
+      });
+
+      if (visible.length) onPrefetch(visible);
+    };
+
+    prefetchVisible();
+    map.on("moveend", prefetchVisible);
+    map.on("zoomend", prefetchVisible);
+    return () => {
+      map.off("moveend", prefetchVisible);
+      map.off("zoomend", prefetchVisible);
+    };
+  }, [map, districts, zoom, onPrefetch]);
+
+  return null;
+}
+
 function RiskMap({
   districts,
   selectedDisaster = "FLOOD",
@@ -1347,6 +1448,8 @@ function RiskMap({
   alerts,
   selectedPlace,
   mapResetSignal,
+  onPrefetchLocations,
+  locationMlLoadingByKey,
 }) {
   const [mapZoom, setMapZoom] = useState(DEFAULT_ZOOM);
 
@@ -1384,6 +1487,11 @@ function RiskMap({
         />
         <MapZoomWatcher onZoom={setMapZoom} />
         <MapClickCapture />
+        <VisibleLocationPrefetch
+          districts={filteredDistricts}
+          zoom={mapZoom}
+          onPrefetch={onPrefetchLocations}
+        />
 
         {filteredDistricts.map((district) => {
           const displayRisk = viewingLandslide ? district.landslideRisk : district.risk;
@@ -1451,6 +1559,10 @@ function RiskMap({
                   const liveLocationRisk = viewingLandslide ? getLandslideRiskLevel(locationPrediction) : getLiveRiskLevel(locationPrediction);
                   const locationScore = viewingLandslide ? getLandslideRiskScore(locationPrediction) : getLiveRiskScore(locationPrediction);
                   const locationConfig = getRiskConfig(liveLocationRisk);
+                  const locationCacheKey = `${district.id}::${location.id}`;
+                  const locationMlLoading = Boolean(
+                    locationMlLoadingByKey?.[`${locationCacheKey}::${viewingLandslide ? "landslide" : "flood"}`]
+                  );
                   const hazard = getAlertHazardType(
                     (alerts || []).find((alert) => alertMentionsName(alert, location.name))
                   );
@@ -1471,7 +1583,7 @@ function RiskMap({
                       {mapZoom >= 11 && (
                         <Tooltip direction="top" offset={[0, -7]} opacity={0.95} permanent>
                           <span className="text-[10px] font-semibold">
-                            {location.name} · {liveLocationRisk ? locationConfig.label : "Unavailable"}
+                            {location.name} · {liveLocationRisk ? locationConfig.label : locationMlLoading ? "Loading live ML…" : "Unavailable"}
                             {hazard ? ` · ${hazard}` : ""}
                           </span>
                         </Tooltip>
@@ -1491,7 +1603,9 @@ function RiskMap({
                           </div>
                           {!liveLocationRisk && (
                             <div className="text-[10px] mt-2 text-slate-500">
-                              A live location-level ML prediction is requested only when this location is selected, reducing unnecessary provider traffic.
+                              {locationMlLoading
+                                ? "Fetching a genuine live ML prediction for this location…"
+                                : "No fresh location-level ML result is available yet. When this point is visible at zoom 9+, the dashboard requests its real coordinate-based prediction; no default score is substituted."}
                             </div>
                           )}
                         </div>
@@ -2121,6 +2235,7 @@ export default function DisasterDashboard() {
   const [weatherStatus, setWeatherStatus] = useState("loading");
   const [mlStatus, setMlStatus] = useState("idle");
   const [landslideStatus, setLandslideStatus] = useState("idle");
+  const [locationMlLoadingByKey, setLocationMlLoadingByKey] = useState({});
   const [weatherError, setWeatherError] = useState("");
   const [apiError, setApiError] = useState("");
   const [selectedRisk, setSelectedRisk] = useState("ALL");
@@ -2162,6 +2277,16 @@ export default function DisasterDashboard() {
     )
   );
   const landslideSyncInFlightRef = useRef(false);
+  const locationFloodPredictionCacheRef = useRef(
+    cacheItemToMap(readPersistentPredictionCache(LOCATION_FLOOD_ML_CACHE_KEY, ML_CACHE_TTL_MS))
+  );
+  const locationLandslidePredictionCacheRef = useRef(
+    cacheItemToMap(readPersistentPredictionCache(LOCATION_LANDSLIDE_ML_CACHE_KEY, LANDSLIDE_ML_CACHE_TTL_MS))
+  );
+  const locationFloodInFlightRef = useRef(new Set());
+  const locationLandslideInFlightRef = useRef(new Set());
+  const locationFloodQueueRef = useRef({ active: 0, pending: [] });
+  const locationLandslideQueueRef = useRef({ active: 0, pending: [] });
 
   useEffect(() => {
     selectedPlaceRef.current = selectedPlace;
@@ -2379,6 +2504,11 @@ export default function DisasterDashboard() {
       if (Object.keys(cacheItems).length) {
         writePersistentPredictionCache(FLOOD_ML_CACHE_KEY, cacheItems);
       }
+      if (tasksToFetch.length > successCount) {
+        // Do not leave failed districts unavailable for the full 10-minute gap.
+        // The next normal dashboard refresh can retry failed live calls.
+        lastMlRequestAtRef.current = Date.now() - ML_REQUEST_GAP_MS + 55_000;
+      }
 
       if (successCount === 0 && !Object.keys(cacheItems).length) {
         setMlStatus("unavailable");
@@ -2515,6 +2645,10 @@ export default function DisasterDashboard() {
       if (Object.keys(cacheItems).length) {
         writePersistentPredictionCache(LANDSLIDE_ML_CACHE_KEY, cacheItems);
       }
+      if (tasksToFetch.length > successCount) {
+        // Retry failed live locations sooner than the standard 15-minute gap.
+        lastLandslideRequestAtRef.current = Date.now() - LANDSLIDE_ML_REQUEST_GAP_MS + 55_000;
+      }
 
       if (successCount === 0 && !Object.keys(cacheItems).length) {
         setLandslideStatus("unavailable");
@@ -2526,95 +2660,170 @@ export default function DisasterDashboard() {
 
   const requestLocationMl = useCallback(async (location, district) => {
     if (!location || !district) return;
-    const existing = location.mlPrediction;
+    const cacheId = `${district.id}::${location.id}`;
     const existingTime = location.mlUpdatedAt ? new Date(location.mlUpdatedAt).getTime() : 0;
-    if (existing && existingTime && Date.now() - existingTime < ML_REQUEST_GAP_MS) return;
+    if (location.mlPrediction && existingTime && Date.now() - existingTime < ML_REQUEST_GAP_MS) return;
+    if (locationFloodInFlightRef.current.has(cacheId)) return;
 
+    const cached = locationFloodPredictionCacheRef.current.get(cacheId);
+    if (
+      isFreshPredictionCacheEntry(cached, ML_CACHE_TTL_MS) &&
+      isTrustedV63Prediction(cached.prediction) &&
+      getLiveRiskScore(cached.prediction) !== null
+    ) {
+      const prediction = cached.prediction;
+      const updatedAt = cached.updatedAt;
+      setBaseDistricts((current) => current.map((item) => item.id !== district.id ? item : {
+        ...item,
+        locations: (item.locations || []).map((candidate) => candidate.id !== location.id ? candidate : {
+          ...candidate,
+          mlPrediction: prediction,
+          mlUpdatedAt: updatedAt,
+          riskSource: "ML",
+          score: getLiveRiskScore(prediction),
+          risk: getLiveRiskLevel(prediction),
+        }),
+      }));
+      return;
+    }
+
+    locationFloodInFlightRef.current.add(cacheId);
+    setLocationMlLoadingByKey((current) => ({ ...current, [`${cacheId}::flood`]: true }));
     try {
-      const response = await fetch(`${API_BASE_URL}/api/ml/predict-risk`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Accept: "application/json" },
-        body: JSON.stringify({ latitude: Number(location.lat), longitude: Number(location.lng) }),
+      const prediction = await runWithConcurrency(locationFloodQueueRef, LOCATION_ML_CONCURRENCY, async () => {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), ML_FETCH_TIMEOUT_MS);
+        try {
+          const response = await fetch(`${API_BASE_URL}/api/ml/predict-risk`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", Accept: "application/json" },
+            body: JSON.stringify({ latitude: Number(location.lat), longitude: Number(location.lng) }),
+            signal: controller.signal,
+          });
+          if (!response.ok) {
+            const message = await response.text();
+            throw new Error(`ML ${response.status}: ${message}`);
+          }
+          const value = await response.json();
+          if (!isTrustedV63Prediction(value)) throw new Error(`Untrusted V6.3 ML response for ${location.name}.`);
+          if (getLiveRiskScore(value) === null) throw new Error(`No valid flood probability for ${location.name}.`);
+          return value;
+        } catch (error) {
+          if (error?.name === "AbortError") throw new Error(`Flood ML timed out for ${location.name}.`);
+          throw error;
+        } finally {
+          clearTimeout(timer);
+        }
       });
-      if (!response.ok) {
-        const message = await response.text();
-        throw new Error(`ML ${response.status}: ${message}`);
-      }
-      const prediction = await response.json();
-
-      if (!isTrustedV63Prediction(prediction)) {
-        throw new Error(
-          `Untrusted ML response for ${location.name}: expected real-data-v6.3 predictor metadata.`
-        );
-      }
-
-      if (getLiveRiskScore(prediction) === null) {
-        throw new Error(`V6.3 ML response for ${location.name} has no flood probability.`);
-      }
 
       const updatedAt = extractPredictionTimestamp(prediction) || new Date().toISOString();
-
-      setBaseDistricts((current) =>
-        current.map((item) =>
-          item.id !== district.id
-            ? item
-            : {
-                ...item,
-                locations: (item.locations || []).map((candidate) =>
-                  candidate.id !== location.id
-                    ? candidate
-                    : {
-                        ...candidate,
-                        mlPrediction: prediction,
-                        mlUpdatedAt: updatedAt,
-                        riskSource: "ML",
-                        score: getLiveRiskScore(prediction),
-                        risk: getLiveRiskLevel(prediction),
-                      }
-                ),
-              }
-        )
-      );
+      locationFloodPredictionCacheRef.current.set(cacheId, { prediction, updatedAt });
+      writePersistentPredictionCache(LOCATION_FLOOD_ML_CACHE_KEY, mapToCacheItems(locationFloodPredictionCacheRef.current));
+      // Keep district-centroid scores separate from this actual locality-coordinate prediction.
+      setBaseDistricts((current) => current.map((item) => item.id !== district.id ? item : {
+        ...item,
+        locations: (item.locations || []).map((candidate) => candidate.id !== location.id ? candidate : {
+          ...candidate,
+          mlPrediction: prediction,
+          mlUpdatedAt: updatedAt,
+          riskSource: "ML",
+          score: getLiveRiskScore(prediction),
+          risk: getLiveRiskLevel(prediction),
+        }),
+      }));
     } catch (error) {
-      console.warn(`Location ML unavailable for ${location.name}:`, error?.message || error);
+      console.warn(`Location Flood ML unavailable for ${location.name}:`, error?.message || error);
+    } finally {
+      locationFloodInFlightRef.current.delete(cacheId);
+      setLocationMlLoadingByKey((current) => {
+        const next = { ...current };
+        delete next[`${cacheId}::flood`];
+        return next;
+      });
     }
   }, []);
 
   const requestLocationLandslideMl = useCallback(async (location, district) => {
     if (!location || !district) return;
-    const existing = location.landslidePrediction;
+    const cacheId = `${district.id}::${location.id}`;
     const existingTime = location.landslideUpdatedAt ? new Date(location.landslideUpdatedAt).getTime() : 0;
-    if (existing && existingTime && Date.now() - existingTime < LANDSLIDE_ML_REQUEST_GAP_MS) return;
+    if (location.landslidePrediction && existingTime && Date.now() - existingTime < LANDSLIDE_ML_REQUEST_GAP_MS) return;
+    if (locationLandslideInFlightRef.current.has(cacheId)) return;
 
-    try {
-      const response = await fetch(`${API_BASE_URL}/api/ml/predict-landslide`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Accept: "application/json" },
-        body: JSON.stringify({ latitude: Number(location.lat), longitude: Number(location.lng) }),
-      });
-      if (!response.ok) {
-        const message = await response.text();
-        throw new Error(`Landslide ML ${response.status}: ${message}`);
-      }
-      const prediction = await response.json();
-      if (!isTrustedLandslidePrediction(prediction)) throw new Error("Untrusted landslide response.");
-      const score = getLandslideRiskScore(prediction);
-      const risk = getLandslideRiskLevel(prediction);
-      if (score === null || !risk) throw new Error("Landslide response has no valid risk score.");
-      const updatedAt = extractLandslidePredictionTimestamp(prediction) || new Date().toISOString();
+    const cached = locationLandslidePredictionCacheRef.current.get(cacheId);
+    if (
+      isFreshPredictionCacheEntry(cached, LANDSLIDE_ML_CACHE_TTL_MS) &&
+      isTrustedLandslidePrediction(cached.prediction) &&
+      getLandslideRiskScore(cached.prediction) !== null
+    ) {
+      const prediction = cached.prediction;
+      const updatedAt = cached.updatedAt;
       setBaseDistricts((current) => current.map((item) => item.id !== district.id ? item : {
         ...item,
         locations: (item.locations || []).map((candidate) => candidate.id !== location.id ? candidate : {
           ...candidate,
-          landslideScore: score,
-          landslideRisk: risk,
+          landslideScore: getLandslideRiskScore(prediction),
+          landslideRisk: getLandslideRiskLevel(prediction),
+          landslideRiskSource: "ML",
+          landslidePrediction: prediction,
+          landslideUpdatedAt: updatedAt,
+        }),
+      }));
+      return;
+    }
+
+    locationLandslideInFlightRef.current.add(cacheId);
+    setLocationMlLoadingByKey((current) => ({ ...current, [`${cacheId}::landslide`]: true }));
+    try {
+      const prediction = await runWithConcurrency(locationLandslideQueueRef, LOCATION_ML_CONCURRENCY, async () => {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), ML_FETCH_TIMEOUT_MS);
+        try {
+          const response = await fetch(`${API_BASE_URL}/api/ml/predict-landslide`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", Accept: "application/json" },
+            body: JSON.stringify({ latitude: Number(location.lat), longitude: Number(location.lng) }),
+            signal: controller.signal,
+          });
+          if (!response.ok) {
+            const message = await response.text();
+            throw new Error(`Landslide ML ${response.status}: ${message}`);
+          }
+          const value = await response.json();
+          if (!isTrustedLandslidePrediction(value)) throw new Error(`Untrusted landslide response for ${location.name}.`);
+          if (getLandslideRiskScore(value) === null || !getLandslideRiskLevel(value)) throw new Error(`No valid landslide score for ${location.name}.`);
+          return value;
+        } catch (error) {
+          if (error?.name === "AbortError") throw new Error(`Landslide ML timed out for ${location.name}.`);
+          throw error;
+        } finally {
+          clearTimeout(timer);
+        }
+      });
+
+      const updatedAt = extractLandslidePredictionTimestamp(prediction) || new Date().toISOString();
+      locationLandslidePredictionCacheRef.current.set(cacheId, { prediction, updatedAt });
+      writePersistentPredictionCache(LOCATION_LANDSLIDE_ML_CACHE_KEY, mapToCacheItems(locationLandslidePredictionCacheRef.current));
+      setBaseDistricts((current) => current.map((item) => item.id !== district.id ? item : {
+        ...item,
+        locations: (item.locations || []).map((candidate) => candidate.id !== location.id ? candidate : {
+          ...candidate,
+          landslideScore: getLandslideRiskScore(prediction),
+          landslideRisk: getLandslideRiskLevel(prediction),
           landslideRiskSource: "ML",
           landslidePrediction: prediction,
           landslideUpdatedAt: updatedAt,
         }),
       }));
     } catch (error) {
-      console.warn(`Location landslide ML unavailable for ${location.name}:`, error?.message || error);
+      console.warn(`Location Landslide ML unavailable for ${location.name}:`, error?.message || error);
+    } finally {
+      locationLandslideInFlightRef.current.delete(cacheId);
+      setLocationMlLoadingByKey((current) => {
+        const next = { ...current };
+        delete next[`${cacheId}::landslide`];
+        return next;
+      });
     }
   }, []);
 
@@ -2935,6 +3144,16 @@ export default function DisasterDashboard() {
     setActiveTab("Live Monitoring");
   }, []);
 
+  const handlePrefetchLocations = useCallback(
+    (visibleLocations) => {
+      (visibleLocations || []).forEach(({ location, district }) => {
+        void requestLocationMl(location, district);
+        void requestLocationLandslideMl(location, district);
+      });
+    },
+    [requestLocationMl, requestLocationLandslideMl]
+  );
+
   const handleLocationSelect = useCallback(
     (location, district) => {
       const mergedLocation = { ...location };
@@ -3051,7 +3270,7 @@ export default function DisasterDashboard() {
       { label: "Temperature", icon: Thermometer, value: toFiniteNumber(current.temperature) !== null ? `${Number(current.temperature).toFixed(1)}°C` : "--" },
       { label: "Rainfall · Today", icon: CloudRain, value: toFiniteNumber(current.today_rain) !== null ? `${Number(current.today_rain).toFixed(1)} mm` : "--" },
       { label: "Previous Day", icon: CloudRain, value: toFiniteNumber(current.previous_day_rain) !== null ? `${Number(current.previous_day_rain).toFixed(1)} mm` : "--" },
-      { label: "Rain · Current", icon: CloudRain, value: toFiniteNumber(current.rain) !== null ? `${Number(current.rain).toFixed(1)} mm` : "--" },
+      { label: "Precipitation · Last Hour", icon: CloudRain, value: toFiniteNumber(current.rain) !== null ? `${Number(current.rain).toFixed(1)} mm` : "--" },
       { label: "Humidity", icon: CloudRain, value: toFiniteNumber(current.humidity) !== null ? `${Number(current.humidity).toFixed(0)}%` : "--" },
       { label: "Wind", icon: Navigation, value: toFiniteNumber(current.wind_speed) !== null ? `${Number(current.wind_speed).toFixed(1)} km/h` : "--" },
     ];
@@ -3113,7 +3332,7 @@ export default function DisasterDashboard() {
               })}
             </div>
 
-            <RiskMap districts={districts} selectedDisaster={selectedDisaster} selectedRisk={selectedRisk} onSelectDistrict={handleDistrictSelect} onSelectLocation={handleLocationSelect} alerts={alerts} selectedPlace={selectedPlace} mapResetSignal={mapResetSignal} />
+            <RiskMap districts={districts} selectedDisaster={selectedDisaster} selectedRisk={selectedRisk} onSelectDistrict={handleDistrictSelect} onSelectLocation={handleLocationSelect} onPrefetchLocations={handlePrefetchLocations} locationMlLoadingByKey={locationMlLoadingByKey} alerts={alerts} selectedPlace={selectedPlace} mapResetSignal={mapResetSignal} />
 
             {selectedPlace && (
               <div className="mt-3 rounded-xl border border-sky-500/20 bg-sky-500/[0.04] px-3 py-2.5 flex items-center justify-between">
@@ -3192,7 +3411,7 @@ export default function DisasterDashboard() {
     <>
       <section className="rounded-2xl border border-slate-800/90 bg-slate-900/80 p-4 shadow-xl">
         <SectionHeader title="Live Monitoring" subtitle="Real-time geospatial flood-risk monitoring" icon={Radio} action={<div className="flex items-center gap-2"><StatusDot active={weatherStatus === "live"} pulse={weatherStatus === "live"} /><span className="text-[9px] text-emerald-400">MONITORING {weatherStatus === "live" ? "ACTIVE" : "DEGRADED"}</span></div>} />
-        <RiskMap districts={districts} selectedDisaster={selectedDisaster} selectedRisk={selectedRisk} onSelectDistrict={handleDistrictSelect} onSelectLocation={handleLocationSelect} alerts={alerts} selectedPlace={selectedPlace} mapResetSignal={mapResetSignal} />
+        <RiskMap districts={districts} selectedDisaster={selectedDisaster} selectedRisk={selectedRisk} onSelectDistrict={handleDistrictSelect} onSelectLocation={handleLocationSelect} onPrefetchLocations={handlePrefetchLocations} locationMlLoadingByKey={locationMlLoadingByKey} alerts={alerts} selectedPlace={selectedPlace} mapResetSignal={mapResetSignal} />
       </section>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
