@@ -3220,6 +3220,8 @@ export default function DisasterDashboard() {
   );
 
   const renderAnalytics = () => {
+    // Ranking/distribution cards remain explicitly flood-specific. The Regional
+    // Risk Analysis Graph below now plots both ML hazards independently.
     const liveDistricts = districts
       .filter((district) => district.riskSource === "ML" && Number.isFinite(Number(district.score)))
       .map((district) => ({ ...district, score: clamp(Number(district.score), 0, 100) }))
@@ -3230,12 +3232,18 @@ export default function DisasterDashboard() {
       ["Medium", "MEDIUM"],
       ["High", "HIGH"],
       ["Critical", "CRITICAL"],
-    ].map(([name, key]) => ({ name, key, value: liveDistricts.filter((district) => district.risk === key).length, color: getRiskConfig(key).color }));
+    ].map(([name, key]) => ({
+      name,
+      key,
+      value: liveDistricts.filter((district) => district.risk === key).length,
+      color: getRiskConfig(key).color,
+    }));
 
-    // For the graph, use the fixed Uttarakhand district order rather than
-    // sorting by score. Sorting by score makes the line look artificially
-    // monotonic and hides the actual regional variation.
-    const graphDistricts = [...liveDistricts].sort((a, b) => Number(a.order ?? 0) - Number(b.order ?? 0));
+    // Use all 13 districts in their fixed geographic order, even while one of
+    // the hazard models is still loading. Missing scores are shown as gaps.
+    const graphDistricts = [...districts].sort(
+      (a, b) => Number(a.order ?? 0) - Number(b.order ?? 0)
+    );
     const graphWidth = 1000;
     const graphHeight = 270;
     const graphLeft = 34;
@@ -3244,63 +3252,120 @@ export default function DisasterDashboard() {
     const graphBottom = 236;
     const graphXRange = graphRight - graphLeft;
     const graphYRange = graphBottom - graphTop;
-
     const toGraphY = (score) => graphBottom - (score / 100) * graphYRange;
-    const graphPoints = graphDistricts.map((district, index) => {
-      const x = graphDistricts.length === 1
-        ? (graphLeft + graphRight) / 2
-        : graphLeft + (index / (graphDistricts.length - 1)) * graphXRange;
+
+    const graphScoreFor = (district, hazard) => {
+      const source = hazard === "flood" ? district.riskSource : district.landslideRiskSource;
+      const rawScore = hazard === "flood" ? district.score : district.landslideScore;
+      if (source !== "ML") return null;
+      const score = toFiniteNumber(rawScore);
+      return score === null ? null : clamp(score, 0, 100);
+    };
+
+    const graphSeriesDefinitions = [
+      { key: "flood", label: "Flood ML", shortLabel: "Flood", color: "#38bdf8" },
+      { key: "landslide", label: "Landslide ML", shortLabel: "Landslide", color: "#a78bfa" },
+    ];
+
+    const graphSeries = graphSeriesDefinitions.map((definition) => {
+      const points = graphDistricts.map((district, index) => {
+        const score = graphScoreFor(district, definition.key);
+        const rawRisk = definition.key === "flood" ? district.risk : district.landslideRisk;
+        const risk = score === null ? null : normalizeRisk(rawRisk) || riskFromScore(score);
+        const x = graphDistricts.length === 1
+          ? (graphLeft + graphRight) / 2
+          : graphLeft + (index / (graphDistricts.length - 1)) * graphXRange;
+        return {
+          id: district.id,
+          name: district.name,
+          district,
+          index,
+          x,
+          y: score === null ? null : toGraphY(score),
+          score,
+          risk,
+        };
+      });
+
+      // Only calculate movement between adjacent districts when both actual
+      // values are available. A missing model response is never treated as 0.
+      const changes = points.slice(1).flatMap((point, index) => {
+        const previous = points[index];
+        if (point.score === null || previous.score === null) return [];
+        const delta = Number((point.score - previous.score).toFixed(1));
+        return [{
+          from: previous,
+          to: point,
+          delta,
+          midX: (previous.x + point.x) / 2,
+          midY: (previous.y + point.y) / 2,
+        }];
+      });
+
+      const validPoints = points.filter((point) => point.score !== null);
+      const positiveChanges = changes.filter((item) => item.delta > 0);
+      const negativeChanges = changes.filter((item) => item.delta < 0);
+      const flatChanges = changes.filter((item) => item.delta === 0);
+      const totalRise = positiveChanges.reduce((sum, item) => sum + item.delta, 0);
+      const totalFall = Math.abs(negativeChanges.reduce((sum, item) => sum + item.delta, 0));
+      const averageScore = validPoints.length
+        ? validPoints.reduce((sum, point) => sum + point.score, 0) / validPoints.length
+        : null;
+      const scoreMin = validPoints.length ? Math.min(...validPoints.map((point) => point.score)) : null;
+      const scoreMax = validPoints.length ? Math.max(...validPoints.map((point) => point.score)) : null;
+      const scoreRange = scoreMin !== null && scoreMax !== null ? scoreMax - scoreMin : null;
+      const standardDeviation = validPoints.length
+        ? Math.sqrt(
+            validPoints.reduce((sum, point) => sum + Math.pow(point.score - averageScore, 2), 0) /
+              validPoints.length
+          )
+        : null;
+      const largestRise = positiveChanges.length
+        ? positiveChanges.reduce((best, item) => item.delta > best.delta ? item : best)
+        : null;
+      const largestFall = negativeChanges.length
+        ? negativeChanges.reduce((best, item) => item.delta < best.delta ? item : best)
+        : null;
+      const criticalCount = validPoints.filter((point) => point.score >= 80).length;
+      const highCount = validPoints.filter((point) => point.score >= 60 && point.score < 80).length;
+      const mediumCount = validPoints.filter((point) => point.score >= 30 && point.score < 60).length;
+      const lowCount = validPoints.filter((point) => point.score < 30).length;
+      const bandChanges = changes.filter((item) => item.from.risk !== item.to.risk).length;
+      const netChange = validPoints.length > 1
+        ? validPoints[validPoints.length - 1].score - validPoints[0].score
+        : null;
+
       return {
-        x,
-        y: toGraphY(district.score),
-        score: district.score,
-        name: district.name,
-        risk: district.risk,
-        color: getRiskConfig(district.risk).color,
+        ...definition,
+        points,
+        changes,
+        stats: {
+          validCount: validPoints.length,
+          positiveChanges,
+          negativeChanges,
+          flatChanges,
+          totalRise,
+          totalFall,
+          averageScore,
+          scoreMin,
+          scoreMax,
+          scoreRange,
+          standardDeviation,
+          largestRise,
+          largestFall,
+          criticalCount,
+          highCount,
+          mediumCount,
+          lowCount,
+          bandChanges,
+          netChange,
+        },
       };
     });
 
-    const linePoints = graphPoints.map((point) => `${point.x},${point.y}`).join(" ");
-    const areaPoints = graphPoints.length
-      ? [`${graphLeft},${graphBottom}`, ...graphPoints.map((point) => `${point.x},${point.y}`), `${graphRight},${graphBottom}`].join(" ")
-      : "";
-
-    const graphChanges = graphPoints.slice(1).map((point, index) => {
-      const previous = graphPoints[index];
-      return {
-        from: previous,
-        to: point,
-        delta: Number((point.score - previous.score).toFixed(1)),
-        midX: (previous.x + point.x) / 2,
-        midY: (previous.y + point.y) / 2,
-      };
-    });
-
-    const positiveChanges = graphChanges.filter((item) => item.delta > 0);
-    const negativeChanges = graphChanges.filter((item) => item.delta < 0);
-    const flatChanges = graphChanges.filter((item) => item.delta === 0);
-    const totalRise = positiveChanges.reduce((sum, item) => sum + item.delta, 0);
-    const totalFall = Math.abs(negativeChanges.reduce((sum, item) => sum + item.delta, 0));
-    const averageScore = graphPoints.length
-      ? graphPoints.reduce((sum, point) => sum + point.score, 0) / graphPoints.length
-      : null;
-    const scoreMin = graphPoints.length ? Math.min(...graphPoints.map((point) => point.score)) : null;
-    const scoreMax = graphPoints.length ? Math.max(...graphPoints.map((point) => point.score)) : null;
-    const scoreRange = scoreMin !== null && scoreMax !== null ? scoreMax - scoreMin : null;
-    const standardDeviation = graphPoints.length
-      ? Math.sqrt(
-          graphPoints.reduce((sum, point) => sum + Math.pow(point.score - averageScore, 2), 0) /
-            graphPoints.length
-        )
-      : null;
-    const largestRise = positiveChanges.length ? positiveChanges.reduce((best, item) => item.delta > best.delta ? item : best) : null;
-    const largestFall = negativeChanges.length ? negativeChanges.reduce((best, item) => item.delta < best.delta ? item : best) : null;
-    const criticalCount = graphPoints.filter((point) => point.score >= 80).length;
-    const highCount = graphPoints.filter((point) => point.score >= 60 && point.score < 80).length;
-    const mediumCount = graphPoints.filter((point) => point.score >= 30 && point.score < 60).length;
-    const lowCount = graphPoints.filter((point) => point.score < 30).length;
-    const bandChanges = graphPoints.slice(1).filter((point, index) => point.risk !== graphPoints[index].risk).length;
-    const netChange = graphPoints.length > 1 ? graphPoints[graphPoints.length - 1].score - graphPoints[0].score : 0;
+    const floodSeries = graphSeries.find((series) => series.key === "flood");
+    const landslideSeries = graphSeries.find((series) => series.key === "landslide");
+    const hasGraphData = graphSeries.some((series) => series.points.some((point) => point.score !== null));
 
     const thresholdLines = [
       { score: 80, label: "CRITICAL", color: RISK_CONFIG.CRITICAL.color },
@@ -3308,18 +3373,33 @@ export default function DisasterDashboard() {
       { score: 30, label: "MEDIUM", color: RISK_CONFIG.MEDIUM.color },
     ];
 
+    const metricCards = [
+      { key: "mean", label: "Mean", value: (stats) => stats.averageScore === null ? "—" : `${stats.averageScore.toFixed(1)}%` },
+      { key: "range", label: "Range", value: (stats) => stats.scoreRange === null ? "—" : `${stats.scoreRange.toFixed(1)} pts` },
+      { key: "stddev", label: "Std. Dev.", value: (stats) => stats.standardDeviation === null ? "—" : `${stats.standardDeviation.toFixed(1)} pts` },
+      { key: "net", label: "Net Δ", value: (stats) => stats.netChange === null ? "—" : `${stats.netChange > 0 ? "+" : ""}${stats.netChange.toFixed(1)} pts` },
+      { key: "rising", label: "Rising Segments", value: (stats) => `↑ ${stats.positiveChanges.length}` },
+      { key: "falling", label: "Falling Segments", value: (stats) => `↓ ${stats.negativeChanges.length}` },
+      { key: "total", label: "Total Rise / Fall", value: (stats) => `+${stats.totalRise.toFixed(1)} / −${stats.totalFall.toFixed(1)}` },
+      { key: "bands", label: "Band Changes", value: (stats) => String(stats.bandChanges) },
+    ];
+
+    const scoreLabel = (score) => score === null ? "—" : `${score}%`;
+    const riskLabel = (risk) => risk ? getRiskConfig(risk).label : "Unavailable";
+    const formatDelta = (value) => value === null ? "—" : `${value > 0 ? "+" : ""}${value.toFixed(1)}`;
+
     return (
       <>
         <div className="grid grid-cols-2 xl:grid-cols-4 gap-3">
           <MetricCard icon={ShieldAlert} label="Platform Risk" value={computedMetrics.overallRisk || "—"} detail={computedMetrics.overallRiskScore !== null ? `Current score ${computedMetrics.overallRiskScore}%` : "No ML score available"} tone="red" />
-          <MetricCard icon={TrendingUp} label="Highest ML Score" value={liveDistricts[0] ? `${liveDistricts[0].score}%` : "—"} detail={liveDistricts[0]?.name || "No district ML data"} tone="orange" />
+          <MetricCard icon={TrendingUp} label="Highest Flood ML Score" value={liveDistricts[0] ? `${liveDistricts[0].score}%` : "—"} detail={liveDistricts[0]?.name || "No flood ML data"} tone="orange" />
           <MetricCard icon={Activity} label="Data Freshness" value={weatherStatus === "live" ? "LIVE" : weatherStatus === "cached" ? "CACHED" : "—"} detail="Open-Meteo weather + flood ML" tone="emerald" />
-          <MetricCard icon={Users} label="ML Coverage" value={`${computedMetrics.liveMlDistricts}/13`} detail="Districts with successful flood-model output" tone="sky" />
+          <MetricCard icon={Users} label="Flood ML Coverage" value={`${computedMetrics.liveMlDistricts}/13`} detail="Districts with successful flood-model output" tone="sky" />
         </div>
 
         <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
           <section className="rounded-2xl border border-slate-800 bg-slate-900/80 p-5">
-            <SectionHeader title="Live Risk Distribution" subtitle="Only successful current flood-model predictions" icon={TrendingUp} />
+            <SectionHeader title="Live Flood Risk Distribution" subtitle="Only successful current flood-model predictions" icon={TrendingUp} />
             <div className="space-y-5">
               {distribution.map((item) => {
                 const percentage = liveDistricts.length ? Math.round((item.value / liveDistricts.length) * 100) : 0;
@@ -3329,7 +3409,7 @@ export default function DisasterDashboard() {
           </section>
 
           <section className="rounded-2xl border border-slate-800 bg-slate-900/80 p-5">
-            <SectionHeader title="Live Regional Risk Ranking" subtitle="Highest current flood-model scores" icon={MapPin} />
+            <SectionHeader title="Live Flood Risk Ranking" subtitle="Highest current flood-model scores" icon={MapPin} />
             <div className="space-y-2">
               {liveDistricts.slice(0, 7).map((district, index) => {
                 const config = getRiskConfig(district.risk);
@@ -3341,23 +3421,47 @@ export default function DisasterDashboard() {
         </div>
 
         <section className="rounded-2xl border border-slate-800 bg-slate-900/80 p-5">
-          <SectionHeader title="Regional Risk Analysis Graph" subtitle="13 districts · fixed regional order · mathematical score movement" icon={Activity} action={<span className="flex items-center gap-1.5 text-[9px] text-emerald-400"><StatusDot active={mlStatus === "live"} pulse={mlStatus === "live"} />{mlStatus === "live" ? "LIVE ML" : "ML STATUS"}</span>} />
+          <SectionHeader
+            title="Regional Risk Analysis Graph"
+            subtitle="13 districts · fixed regional order · Flood and Landslide ML scores"
+            icon={Activity}
+            action={(
+              <div className="flex flex-wrap items-center justify-end gap-3 text-[9px]">
+                <span className="flex items-center gap-1.5" style={{ color: floodSeries.color }}><StatusDot active={mlStatus === "live"} pulse={mlStatus === "live"} />FLOOD {mlStatus === "live" ? "LIVE" : String(mlStatus).toUpperCase()}</span>
+                <span className="flex items-center gap-1.5" style={{ color: landslideSeries.color }}><StatusDot active={landslideStatus === "live"} pulse={landslideStatus === "live"} />LANDSLIDE {landslideStatus === "live" ? "LIVE" : String(landslideStatus).toUpperCase()}</span>
+              </div>
+            )}
+          />
 
-          <div className="mb-4 grid grid-cols-2 sm:grid-cols-4 xl:grid-cols-8 gap-2">
-            <div className="rounded-lg border border-slate-800 bg-slate-950/30 px-3 py-2"><div className="text-[8px] uppercase tracking-wider text-slate-600">Mean</div><div className="text-sm font-black text-slate-200">{averageScore !== null ? `${averageScore.toFixed(1)}%` : "—"}</div></div>
-            <div className="rounded-lg border border-slate-800 bg-slate-950/30 px-3 py-2"><div className="text-[8px] uppercase tracking-wider text-slate-600">Range</div><div className="text-sm font-black text-sky-300">{scoreRange !== null ? `${scoreRange.toFixed(1)} pts` : "—"}</div></div>
-            <div className="rounded-lg border border-slate-800 bg-slate-950/30 px-3 py-2"><div className="text-[8px] uppercase tracking-wider text-slate-600">Std. Dev.</div><div className="text-sm font-black text-slate-200">{standardDeviation !== null ? `${standardDeviation.toFixed(1)} pts` : "—"}</div></div>
-            <div className="rounded-lg border border-slate-800 bg-slate-950/30 px-3 py-2"><div className="text-[8px] uppercase tracking-wider text-slate-600">Net Δ</div><div className={`text-sm font-black ${netChange > 0 ? "text-orange-400" : netChange < 0 ? "text-emerald-400" : "text-slate-300"}`}>{graphPoints.length > 1 ? `${netChange > 0 ? "+" : ""}${netChange.toFixed(1)} pts` : "—"}</div></div>
-            <div className="rounded-lg border border-slate-800 bg-slate-950/30 px-3 py-2"><div className="text-[8px] uppercase tracking-wider text-slate-600">Rising Segments</div><div className="text-sm font-black text-orange-400">↑ {positiveChanges.length}</div></div>
-            <div className="rounded-lg border border-slate-800 bg-slate-950/30 px-3 py-2"><div className="text-[8px] uppercase tracking-wider text-slate-600">Falling Segments</div><div className="text-sm font-black text-emerald-400">↓ {negativeChanges.length}</div></div>
-            <div className="rounded-lg border border-slate-800 bg-slate-950/30 px-3 py-2"><div className="text-[8px] uppercase tracking-wider text-slate-600">Total Rise / Fall</div><div className="text-sm font-black text-slate-200">+{totalRise.toFixed(1)} / −{totalFall.toFixed(1)}</div></div>
-            <div className="rounded-lg border border-slate-800 bg-slate-950/30 px-3 py-2"><div className="text-[8px] uppercase tracking-wider text-slate-600">Band Changes</div><div className="text-sm font-black text-violet-300">{bandChanges}</div></div>
+          <div className="mb-3 flex flex-wrap items-center gap-x-5 gap-y-2 text-[10px] text-slate-400">
+            {graphSeries.map((series) => (
+              <span key={series.key} className="inline-flex items-center gap-2">
+                <span className="inline-block h-0.5 w-7 rounded-full" style={{ backgroundColor: series.color }} />
+                <span style={{ color: series.color }}>{series.label}</span>
+                <span className="text-slate-600">{series.stats.validCount}/13 districts</span>
+              </span>
+            ))}
+            <span className="text-slate-600">Missing model values stay blank; they are never plotted as zero.</span>
+          </div>
+
+          <div className="mb-4 grid grid-cols-2 sm:grid-cols-4 gap-2">
+            {metricCards.map((metric) => (
+              <div key={metric.key} className="rounded-lg border border-slate-800 bg-slate-950/30 px-3 py-2">
+                <div className="text-[8px] uppercase tracking-wider text-slate-600">{metric.label}</div>
+                {graphSeries.map((series) => (
+                  <div key={series.key} className="mt-1 flex items-center justify-between gap-2 text-[9px]">
+                    <span style={{ color: series.color }}>{series.shortLabel}</span>
+                    <span className="font-bold text-slate-200 text-right">{metric.value(series.stats)}</span>
+                  </div>
+                ))}
+              </div>
+            ))}
           </div>
 
           <div className="rounded-xl border border-slate-800 bg-slate-950 relative overflow-hidden p-3">
             <div className="absolute inset-0 opacity-20 bg-[linear-gradient(to_right,#334155_1px,transparent_1px),linear-gradient(to_bottom,#334155_1px,transparent_1px)] [background-size:40px_40px]" />
-            {graphPoints.length ? (
-              <svg viewBox={`0 0 ${graphWidth} ${graphHeight}`} preserveAspectRatio="none" className="relative w-full h-[340px]">
+            {hasGraphData ? (
+              <svg viewBox={`0 0 ${graphWidth} ${graphHeight}`} preserveAspectRatio="none" className="relative w-full h-[340px]" role="img" aria-label="Flood and landslide ML risk scores for each Uttarakhand district">
                 <rect x={graphLeft} y={graphTop} width={graphXRange} height={toGraphY(80) - graphTop} fill={RISK_CONFIG.CRITICAL.color} fillOpacity="0.045" />
                 <rect x={graphLeft} y={toGraphY(80)} width={graphXRange} height={toGraphY(60) - toGraphY(80)} fill={RISK_CONFIG.HIGH.color} fillOpacity="0.035" />
                 <rect x={graphLeft} y={toGraphY(60)} width={graphXRange} height={toGraphY(30) - toGraphY(60)} fill={RISK_CONFIG.MEDIUM.color} fillOpacity="0.025" />
@@ -3377,82 +3481,117 @@ export default function DisasterDashboard() {
                   </g>
                 ))}
 
-                {areaPoints && <polygon points={areaPoints} fill="#94a3b8" fillOpacity="0.06" />}
-                <polyline points={linePoints} fill="none" stroke="#94a3b8" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
-
-                {graphChanges.map((change, index) => {
-                  const labelY = clamp(change.midY + (change.delta >= 0 ? -11 : 17), 12, graphHeight - 26);
-                  const positive = change.delta > 0;
-                  const negative = change.delta < 0;
-                  const label = change.delta === 0 ? "0.0" : `${change.delta > 0 ? "+" : ""}${change.delta.toFixed(1)}`;
-                  return (
-                    <g key={`${change.from.name}-${change.to.name}-${index}`}>
-                      <circle cx={change.midX} cy={change.midY} r="9" fill="#0d1420" fillOpacity="0.86" stroke="#334155" strokeWidth="1" />
-                      <text x={change.midX} y={labelY} textAnchor="middle" fill={positive ? RISK_CONFIG.HIGH.color : negative ? RISK_CONFIG.LOW.color : "#94a3b8"} fontSize="9" fontWeight="800">{label}</text>
-                    </g>
-                  );
-                })}
-
-                {graphPoints.map((point) => (
-                  <g key={point.name}>
-                    <line x1={point.x} y1={graphBottom} x2={point.x} y2={point.y} stroke={point.color} strokeWidth="1" opacity="0.22" />
-                    <circle cx={point.x} cy={point.y} r="8" fill="#0d1420" stroke={point.color} strokeWidth="3" />
-                    <circle cx={point.x} cy={point.y} r="2.5" fill={point.color} />
-                    <text x={point.x} y={graphBottom + 16} textAnchor="middle" fill="#94a3b8" fontSize="8">{point.name.length > 12 ? `${point.name.slice(0, 11)}…` : point.name}</text>
-                    <text x={point.x} y={point.y - 12} textAnchor="middle" fill={point.color} fontSize="9" fontWeight="800">{point.score}%</text>
-                    <title>{`${point.name}: ${point.score}% · ${getRiskConfig(point.risk).label}`}</title>
+                {graphSeries.map((series) => (
+                  <g key={series.key}>
+                    {series.points.slice(1).map((point, index) => {
+                      const previous = series.points[index];
+                      if (point.score === null || previous.score === null) return null;
+                      return <line key={`${series.key}-segment-${previous.id}-${point.id}`} x1={previous.x} y1={previous.y} x2={point.x} y2={point.y} stroke={series.color} strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" opacity="0.95" />;
+                    })}
+                    {series.points.filter((point) => point.score !== null).map((point) => {
+                      const labelY = series.key === "flood"
+                        ? clamp(point.y - 12, graphTop + 10, graphBottom - 5)
+                        : clamp(point.y + 17, graphTop + 10, graphBottom - 2);
+                      return (
+                        <g key={`${series.key}-${point.id}`}>
+                          <line x1={point.x} y1={graphBottom} x2={point.x} y2={point.y} stroke={series.color} strokeWidth="1" opacity="0.18" />
+                          <circle cx={point.x} cy={point.y} r={series.key === "flood" ? 5.5 : 6} fill="#0d1420" stroke={series.color} strokeWidth="2.5" />
+                          <circle cx={point.x} cy={point.y} r="2" fill={series.color} />
+                          <text x={point.x} y={labelY} textAnchor="middle" fill={series.color} fontSize="9" fontWeight="800">{point.score}%</text>
+                          <title>{`${series.label} · ${point.name}: ${point.score}% · ${riskLabel(point.risk)}`}</title>
+                        </g>
+                      );
+                    })}
                   </g>
                 ))}
 
-                <text x="5" y={graphTop + 10} fill="#64748b" fontSize="9">RISK SCORE</text>
+                {graphDistricts.map((district, index) => {
+                  const x = graphDistricts.length === 1
+                    ? (graphLeft + graphRight) / 2
+                    : graphLeft + (index / (graphDistricts.length - 1)) * graphXRange;
+                  return <text key={`district-label-${district.id}`} x={x} y={graphBottom + 16} textAnchor="middle" fill="#94a3b8" fontSize="8">{district.name.length > 12 ? `${district.name.slice(0, 11)}…` : district.name}</text>;
+                })}
+
+                <text x="5" y={graphTop + 10} fill="#64748b" fontSize="9">RISK SCORE (%)</text>
                 <text x={graphRight - 2} y={graphHeight - 4} textAnchor="end" fill="#64748b" fontSize="9">District order →</text>
               </svg>
             ) : (
-              <div className="relative h-[340px] flex items-center justify-center text-xs text-slate-600">Waiting for live ML data...</div>
+              <div className="relative h-[340px] flex items-center justify-center text-xs text-slate-600">Waiting for Flood and Landslide ML data...</div>
             )}
           </div>
 
           <div className="mt-4 grid grid-cols-2 lg:grid-cols-4 gap-2">
             {[
-              ["CRITICAL ≥ 80", criticalCount, RISK_CONFIG.CRITICAL.color],
-              ["HIGH 60–79", highCount, RISK_CONFIG.HIGH.color],
-              ["MEDIUM 30–59", mediumCount, RISK_CONFIG.MEDIUM.color],
-              ["LOW < 30", lowCount, RISK_CONFIG.LOW.color],
-            ].map(([label, value, color]) => (
-              <div key={label} className="rounded-lg border border-slate-800 bg-slate-950/30 px-3 py-2 flex items-center justify-between">
-                <span className="text-[9px] font-semibold" style={{ color }}>{label}</span>
-                <span className="text-xs font-black text-slate-200">{value}</span>
+              { label: "CRITICAL ≥ 80", key: "criticalCount" },
+              { label: "HIGH 60–79", key: "highCount" },
+              { label: "MEDIUM 30–59", key: "mediumCount" },
+              { label: "LOW < 30", key: "lowCount" },
+            ].map((band) => (
+              <div key={band.key} className="rounded-lg border border-slate-800 bg-slate-950/30 px-3 py-2">
+                <span className="text-[9px] font-semibold" style={{ color: RISK_CONFIG[band.key === "criticalCount" ? "CRITICAL" : band.key === "highCount" ? "HIGH" : band.key === "mediumCount" ? "MEDIUM" : "LOW"].color }}>{band.label}</span>
+                {graphSeries.map((series) => (
+                  <div key={series.key} className="mt-1 flex items-center justify-between gap-2 text-[9px]">
+                    <span style={{ color: series.color }}>{series.shortLabel}</span>
+                    <span className="text-xs font-black text-slate-200">{series.stats[band.key]}</span>
+                  </div>
+                ))}
               </div>
             ))}
           </div>
 
           <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-2 text-[9px]">
-            <div className="rounded-lg border border-slate-800 bg-slate-950/30 px-3 py-2 text-slate-500">
-              <span className="text-slate-300 font-semibold">Largest rise:</span>{" "}
-              {largestRise ? `${largestRise.from.name} → ${largestRise.to.name} (+${largestRise.delta.toFixed(1)} pts)` : "No upward segment"}
-            </div>
-            <div className="rounded-lg border border-slate-800 bg-slate-950/30 px-3 py-2 text-slate-500">
-              <span className="text-slate-300 font-semibold">Largest fall:</span>{" "}
-              {largestFall ? `${largestFall.from.name} → ${largestFall.to.name} (${largestFall.delta.toFixed(1)} pts)` : "No downward segment"}
-            </div>
+            {graphSeries.map((series) => (
+              <div key={`${series.key}-rise`} className="rounded-lg border border-slate-800 bg-slate-950/30 px-3 py-2 text-slate-500">
+                <div className="font-semibold mb-1" style={{ color: series.color }}>{series.label} · Largest rise</div>
+                {series.stats.largestRise ? `${series.stats.largestRise.from.name} → ${series.stats.largestRise.to.name} (+${series.stats.largestRise.delta.toFixed(1)} pts)` : "No adjacent upward segment available"}
+                <div className="mt-2 font-semibold" style={{ color: series.color }}>{series.label} · Largest fall</div>
+                {series.stats.largestFall ? `${series.stats.largestFall.from.name} → ${series.stats.largestFall.to.name} (${series.stats.largestFall.delta.toFixed(1)} pts)` : "No adjacent downward segment available"}
+              </div>
+            ))}
           </div>
 
           <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-[9px] text-slate-600">
-            <span>↑ {positiveChanges.length} rising</span>
-            <span>↓ {negativeChanges.length} falling</span>
-            <span>→ {flatChanges.length} flat</span>
-            <span>Σ↑ {totalRise.toFixed(1)} pts</span>
-            <span>Σ↓ {totalFall.toFixed(1)} pts</span>
-            <span>Band transitions {bandChanges}</span>
-            <span>Risk movement = next district score − previous district score</span>
+            {graphSeries.map((series) => (
+              <span key={`${series.key}-movement`}>
+                <span style={{ color: series.color }}>{series.shortLabel}:</span>{" "}
+                ↑ {series.stats.positiveChanges.length} rising · ↓ {series.stats.negativeChanges.length} falling · → {series.stats.flatChanges.length} flat · Σ↑ {series.stats.totalRise.toFixed(1)} · Σ↓ {series.stats.totalFall.toFixed(1)} · Band transitions {series.stats.bandChanges}
+              </span>
+            ))}
+            <span>Movement is calculated only between adjacent districts with valid scores for the same hazard.</span>
           </div>
 
           <div className="mt-3 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2">
             {graphDistricts.map((district, index) => {
-              const config = getRiskConfig(district.risk);
               const previous = graphDistricts[index - 1];
-              const delta = previous ? district.score - previous.score : null;
-              return <button key={district.id} type="button" onClick={() => handleDistrictSelect(district)} className="flex items-center justify-between rounded-lg border border-slate-800 bg-slate-950/30 px-2.5 py-2 hover:bg-slate-900/70 transition"><div className="min-w-0 text-left"><div className="text-[9px] text-slate-400 truncate">{district.name}</div><div className="text-[8px]" style={{ color: config.color }}>{config.label}</div></div><div className="ml-2 text-right"><div className="text-xs font-black" style={{ color: config.color }}>{district.score}%</div><div className={`text-[8px] font-bold ${delta === null ? "text-slate-700" : delta > 0 ? "text-orange-400" : delta < 0 ? "text-emerald-400" : "text-slate-500"}`}>{delta === null ? "BASE" : `${delta > 0 ? "+" : ""}${delta.toFixed(1)} pts`}</div></div></button>;
+              const floodScore = graphScoreFor(district, "flood");
+              const landslideScore = graphScoreFor(district, "landslide");
+              const previousFloodScore = previous ? graphScoreFor(previous, "flood") : null;
+              const previousLandslideScore = previous ? graphScoreFor(previous, "landslide") : null;
+              const floodDelta = floodScore !== null && previousFloodScore !== null ? floodScore - previousFloodScore : null;
+              const landslideDelta = landslideScore !== null && previousLandslideScore !== null ? landslideScore - previousLandslideScore : null;
+              const floodRisk = floodScore === null ? null : normalizeRisk(district.risk) || riskFromScore(floodScore);
+              const landslideRisk = landslideScore === null ? null : normalizeRisk(district.landslideRisk) || riskFromScore(landslideScore);
+              return (
+                <button key={district.id} type="button" onClick={() => handleDistrictSelect(district)} className="rounded-lg border border-slate-800 bg-slate-950/30 px-2.5 py-2 text-left hover:bg-slate-900/70 transition">
+                  <div className="text-[9px] text-slate-300 font-semibold truncate">{district.name}</div>
+                  <div className="mt-2 flex items-center justify-between gap-2 text-[9px]">
+                    <span style={{ color: floodSeries.color }}>Flood</span>
+                    <span className="font-black text-slate-200">{scoreLabel(floodScore)}</span>
+                  </div>
+                  <div className="flex items-center justify-between gap-2 text-[8px]">
+                    <span className="text-slate-600">{riskLabel(floodRisk)}</span>
+                    <span className={floodDelta === null ? "text-slate-700" : floodDelta > 0 ? "text-orange-400" : floodDelta < 0 ? "text-emerald-400" : "text-slate-500"}>{formatDelta(floodDelta)}</span>
+                  </div>
+                  <div className="mt-1 flex items-center justify-between gap-2 text-[9px]">
+                    <span style={{ color: landslideSeries.color }}>Landslide</span>
+                    <span className="font-black text-slate-200">{scoreLabel(landslideScore)}</span>
+                  </div>
+                  <div className="flex items-center justify-between gap-2 text-[8px]">
+                    <span className="text-slate-600">{riskLabel(landslideRisk)}</span>
+                    <span className={landslideDelta === null ? "text-slate-700" : landslideDelta > 0 ? "text-orange-400" : landslideDelta < 0 ? "text-emerald-400" : "text-slate-500"}>{formatDelta(landslideDelta)}</span>
+                  </div>
+                </button>
+              );
             })}
           </div>
         </section>
