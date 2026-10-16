@@ -408,7 +408,8 @@ def extract_dem_features(latitude, longitude):
         row, col = dem.index(longitude, latitude)
 
         if not (0 <= row < dem.height and 0 <= col < dem.width):
-            raise ValueError("Requested location is outside the available DEM coverage.")
+            # Outside local DEM extent: use the existing real-elevation fallback.
+            return _fetch_copernicus_glo90_terrain(latitude, longitude)
 
         original_row, original_col = row, col
         found = _find_real_dem_center(dem, row, col)

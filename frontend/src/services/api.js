@@ -1,61 +1,71 @@
-const API_BASE_URL =
+const API_BASE_URL = (
   import.meta.env.VITE_API_URL ||
-  "https://disaster-dashboard-kgbb.onrender.com";
-
-/* =========================================================
-   STORAGE KEYS
-========================================================= */
+  "https://disaster-dashboard-kgbb.onrender.com"
+).replace(/\/$/, "");
 
 const TOKEN_KEY = "disaster_access_token";
 const USER_KEY = "disaster_user";
 
-/* =========================================================
-   TOKEN HELPERS
-========================================================= */
 
 function getAccessToken() {
   return localStorage.getItem(TOKEN_KEY);
 }
 
+
 function clearAuth() {
   localStorage.removeItem(TOKEN_KEY);
   localStorage.removeItem(USER_KEY);
 
-  // Compatibility cleanup
   localStorage.removeItem("access_token");
   localStorage.removeItem("user");
 
   window.dispatchEvent(new Event("auth:logout"));
 }
 
-/* =========================================================
-   API REQUEST
-========================================================= */
+
+function isPublicAuthEndpoint(endpoint) {
+  return [
+    "/api/auth/register",
+    "/api/auth/login",
+    "/api/auth/verify-otp",
+    "/api/auth/resend-otp",
+  ].some(
+    (path) =>
+      endpoint === path ||
+      endpoint.startsWith(`${path}?`)
+  );
+}
+
 
 async function request(endpoint, options = {}) {
   const token = getAccessToken();
+  const publicAuthEndpoint = isPublicAuthEndpoint(endpoint);
 
   const headers = {
     Accept: "application/json",
-    ...(options.body ? { "Content-Type": "application/json" } : {}),
+
+    ...(options.body
+      ? { "Content-Type": "application/json" }
+      : {}),
+
     ...(options.headers || {}),
   };
 
-  /* =======================================================
-     ATTACH JWT
-  ======================================================= */
-
-  if (token) {
+  // Don't attach an existing JWT to public login or OTP requests.
+  if (token && !publicAuthEndpoint) {
     headers.Authorization = `Bearer ${token}`;
   }
 
   let response;
 
   try {
-    response = await fetch(`${API_BASE_URL}${endpoint}`, {
-      ...options,
-      headers,
-    });
+    response = await fetch(
+      `${API_BASE_URL}${endpoint}`,
+      {
+        ...options,
+        headers,
+      }
+    );
   } catch (error) {
     console.error("API connection error:", error);
 
@@ -63,10 +73,6 @@ async function request(endpoint, options = {}) {
       "Unable to connect to the Disaster Intelligence backend."
     );
   }
-
-  /* =======================================================
-     PARSE RESPONSE
-  ======================================================= */
 
   let data = null;
 
@@ -84,19 +90,16 @@ async function request(endpoint, options = {}) {
     data = null;
   }
 
-  /* =======================================================
-     401 UNAUTHORIZED
-  ======================================================= */
-
-  if (response.status === 401) {
+  // A 401 from a protected endpoint expires the session.
+  // Login/OTP errors should preserve their own error messages.
+  if (
+    response.status === 401 &&
+    token &&
+    !publicAuthEndpoint
+  ) {
     clearAuth();
-
     throw new Error("SESSION_EXPIRED");
   }
-
-  /* =======================================================
-     403 FORBIDDEN
-  ======================================================= */
 
   if (response.status === 403) {
     const message =
@@ -108,10 +111,6 @@ async function request(endpoint, options = {}) {
 
     throw new Error(message);
   }
-
-  /* =======================================================
-     OTHER ERRORS
-  ======================================================= */
 
   if (!response.ok) {
     const message =
@@ -127,9 +126,6 @@ async function request(endpoint, options = {}) {
   return data;
 }
 
-/* =========================================================
-   API METHODS
-========================================================= */
 
 export const api = {
   get(endpoint, options = {}) {
@@ -163,18 +159,11 @@ export const api = {
   },
 };
 
-/* =========================================================
-   apiRequest
-   Compatibility function for AuthContext
-========================================================= */
 
 export async function apiRequest(endpoint, options = {}) {
   return request(endpoint, options);
 }
 
-/* =========================================================
-   EXPORTS
-========================================================= */
 
 export {
   API_BASE_URL,

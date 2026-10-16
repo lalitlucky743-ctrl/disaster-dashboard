@@ -692,6 +692,31 @@ function isTrustedLandslidePrediction(prediction) {
   return version.startsWith("landslide-real-gis-v3") && prediction.real_data_only === true && prediction.completed_daily_data_only === true;
 }
 
+function isTrustedV5CandidatePrediction(prediction) {
+  if (!prediction || typeof prediction !== "object") return false;
+
+  const version = String(prediction.model_version ?? prediction.version ?? "")
+    .trim()
+    .toLowerCase();
+
+  return (
+    version === "landslide-real-gis-v3.3-candidate-v5-extra-trees-no_coords14" &&
+    prediction.endpoint_mode === "candidate_only" &&
+    prediction.production_model_modified === false &&
+    prediction.real_data_only === true &&
+    prediction.completed_daily_data_only === true &&
+    toFiniteNumber(prediction.risk_score) !== null &&
+    toFiniteNumber(prediction.location?.latitude) !== null &&
+    toFiniteNumber(prediction.location?.longitude) !== null
+  );
+}
+
+function getV5CandidateSusceptibilityScore(prediction) {
+  if (!isTrustedV5CandidatePrediction(prediction)) return null;
+  const score = toFiniteNumber(prediction.risk_score);
+  return score === null ? null : Math.round(clamp(score, 0, 100));
+}
+
 function getLandslideRiskScore(prediction) {
   if (!isTrustedLandslidePrediction(prediction)) return null;
   const values = [prediction.landslide_probability, prediction.risk_score, prediction.confidence];
@@ -2235,6 +2260,7 @@ export default function DisasterDashboard() {
   const [weatherStatus, setWeatherStatus] = useState("loading");
   const [mlStatus, setMlStatus] = useState("idle");
   const [landslideStatus, setLandslideStatus] = useState("idle");
+  const [v5CandidateComparison, setV5CandidateComparison] = useState({ status: "idle", districtId: null, prediction: null, error: "" });
   const [locationMlLoadingByKey, setLocationMlLoadingByKey] = useState({});
   const [weatherError, setWeatherError] = useState("");
   const [apiError, setApiError] = useState("");
@@ -2827,6 +2853,83 @@ export default function DisasterDashboard() {
     }
   }, []);
 
+  const runV5CandidateComparison = useCallback(async (district) => {
+    if (!district) return;
+
+    const latitude = toFiniteNumber(district.lat);
+    const longitude = toFiniteNumber(district.lng);
+    if (latitude === null || longitude === null) {
+      setV5CandidateComparison({
+        status: "error",
+        districtId: district.id,
+        prediction: null,
+        error: "This district has no valid coordinates.",
+      });
+      return;
+    }
+
+    setV5CandidateComparison({
+      status: "loading",
+      districtId: district.id,
+      prediction: null,
+      error: "",
+    });
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), ML_FETCH_TIMEOUT_MS);
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/ml/predict-landslide-v5-candidate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify({ latitude, longitude }),
+        signal: controller.signal,
+      });
+
+      let payload = null;
+      try {
+        payload = await response.json();
+      } catch {
+        // Handle non-JSON API errors below without crashing the dashboard.
+      }
+
+      if (!response.ok) {
+        const detail = payload?.detail || payload?.message || `HTTP ${response.status}`;
+        throw new Error(`V5 candidate API failed: ${detail}`);
+      }
+      if (!isTrustedV5CandidatePrediction(payload)) {
+        throw new Error("The API response did not match the expected V5 candidate metadata.");
+      }
+
+      // Ensure that the returned result is for the coordinates we requested.
+      const returnedLat = toFiniteNumber(payload.location?.latitude);
+      const returnedLng = toFiniteNumber(payload.location?.longitude);
+      if (returnedLat === null || returnedLng === null ||
+          Math.abs(returnedLat - latitude) > 0.0001 ||
+          Math.abs(returnedLng - longitude) > 0.0001) {
+        throw new Error("The candidate response coordinates do not match the selected district.");
+      }
+
+      setV5CandidateComparison({
+        status: "success",
+        districtId: district.id,
+        prediction: payload,
+        error: "",
+      });
+    } catch (error) {
+      const message = error?.name === "AbortError"
+        ? "V5 candidate request timed out. Check the backend and try again."
+        : (error?.message || "V5 candidate prediction failed.");
+      setV5CandidateComparison({
+        status: "error",
+        districtId: district.id,
+        prediction: null,
+        error: message,
+      });
+    } finally {
+      clearTimeout(timer);
+    }
+  }, []);
+
   const loadWeather = useCallback(
     async (districtList, { force = false } = {}) => {
       if (weatherSyncInFlightRef.current) return;
@@ -3145,14 +3248,18 @@ export default function DisasterDashboard() {
   }, []);
 
   const handlePrefetchLocations = useCallback(
-    (visibleLocations) => {
-      (visibleLocations || []).forEach(({ location, district }) => {
-        void requestLocationMl(location, district);
+  (visibleLocations) => {
+    (visibleLocations || []).forEach(({ location, district }) => {
+      // Fetch only the selected hazard to reduce upstream API traffic.
+      if (selectedDisaster === "LANDSLIDE") {
         void requestLocationLandslideMl(location, district);
-      });
-    },
-    [requestLocationMl, requestLocationLandslideMl]
-  );
+      } else {
+        void requestLocationMl(location, district);
+      }
+    });
+  },
+  [selectedDisaster, requestLocationMl, requestLocationLandslideMl]
+);
 
   const handleLocationSelect = useCallback(
     (location, district) => {
@@ -3257,6 +3364,24 @@ export default function DisasterDashboard() {
       ? getLiveRiskScore(trustedFocusPrediction)
       : null;
     const weatherSignal = getWeatherSignal(weather);
+    const productionLandslidePrediction = isTrustedLandslidePrediction(focusDistrict?.landslidePrediction)
+      ? focusDistrict.landslidePrediction
+      : null;
+    const productionLandslideScore = productionLandslidePrediction
+      ? getLandslideRiskScore(productionLandslidePrediction)
+      : null;
+    const productionLandslideRisk = productionLandslidePrediction
+      ? getLandslideRiskLevel(productionLandslidePrediction)
+      : null;
+    const v5ComparisonMatchesFocus = v5CandidateComparison.districtId === focusDistrict?.id;
+    const v5CandidatePrediction = v5ComparisonMatchesFocus && v5CandidateComparison.status === "success"
+      ? v5CandidateComparison.prediction
+      : null;
+    const v5CandidateScore = getV5CandidateSusceptibilityScore(v5CandidatePrediction);
+    const v5CandidateRisk = v5CandidatePrediction
+      ? normalizeRisk(v5CandidatePrediction.risk_level) || riskFromScore(v5CandidateScore)
+      : null;
+
     const weatherStatusLabel =
       weatherStatus === "live"
         ? "LIVE"
@@ -3392,6 +3517,72 @@ export default function DisasterDashboard() {
                 <div className="text-xs text-slate-300 mt-1">{focusDistrict?.landslideRiskSource === "ML" && focusDistrict?.landslideRisk ? `Current GSI landslide-model output: ${getRiskConfig(focusDistrict.landslideRisk).label}${focusDistrict.landslideScore !== null ? ` · ${focusDistrict.landslideScore}%` : ""}.` : "Live landslide-model prediction is unavailable for this area; no flood risk or weather heuristic is used as a substitute."}</div>
                 <div className="mt-2 text-[8px] text-slate-600">GSI inventory + terrain DEM + NASA-trained model + live Open-Meteo weather</div>
               </button>
+
+              <div className="mt-3 rounded-xl border border-violet-500/20 bg-violet-500/[0.035] p-3">
+                <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="text-[10px] font-bold uppercase tracking-wider text-violet-300">Experimental V5 · Candidate comparison</div>
+                    <div className="text-[9px] text-slate-500 mt-1 leading-relaxed">
+                      Manual test for the selected district centre. This does not change the production model or its score.
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    disabled={!focusDistrict || v5CandidateComparison.status === "loading"}
+                    onClick={() => void runV5CandidateComparison(focusDistrict)}
+                    className="shrink-0 px-3 py-2 rounded-lg border border-violet-500/30 bg-violet-500/10 text-[9px] font-bold text-violet-200 hover:bg-violet-500/20 disabled:opacity-40 disabled:cursor-not-allowed"
+                  >
+                    {v5CandidateComparison.status === "loading" && v5ComparisonMatchesFocus ? "Testing V5…" : "Run V5 comparison"}
+                  </button>
+                </div>
+
+                <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  <div className="rounded-lg border border-slate-800 bg-slate-950/40 p-3">
+                    <div className="text-[8px] uppercase tracking-wider text-slate-500">Current production model</div>
+                    <div className="mt-2 text-lg font-black text-slate-200">
+                      {productionLandslideScore === null ? "—" : `${productionLandslideScore}/100`}
+                    </div>
+                    <div className="mt-1 text-[9px] text-slate-400">
+                      {productionLandslideRisk ? `${getRiskConfig(productionLandslideRisk).label} susceptibility` : "No accepted production result"}
+                    </div>
+                    <div className="mt-1 text-[8px] text-slate-600 break-all">
+                      {productionLandslidePrediction?.model_version || "Production model unavailable"}
+                    </div>
+                    <div className="mt-1 text-[8px] text-slate-600">
+                      Updated {formatRelativeTime(focusDistrict?.landslideUpdatedAt)}
+                    </div>
+                  </div>
+                  <div className="rounded-lg border border-violet-500/20 bg-slate-950/40 p-3">
+                    <div className="text-[8px] uppercase tracking-wider text-violet-300">V5 candidate · 14 features</div>
+                    <div className="mt-2 text-lg font-black text-slate-200">
+                      {v5CandidateScore === null ? "—" : `${v5CandidateScore}/100`}
+                    </div>
+                    <div className="mt-1 text-[9px] text-slate-400">
+                      {v5CandidateRisk ? `${getRiskConfig(v5CandidateRisk).label} susceptibility` : v5CandidateComparison.status === "loading" && v5ComparisonMatchesFocus ? "Running candidate…" : "Run comparison to test"}
+                    </div>
+                    <div className="mt-1 text-[8px] text-slate-600 break-all">
+                      {v5CandidatePrediction?.model_version || "Candidate result not loaded"}
+                    </div>
+                  </div>
+                </div>
+
+                {v5ComparisonMatchesFocus && v5CandidateComparison.status === "error" && (
+                  <div className="mt-3 rounded-lg border border-red-500/20 bg-red-500/[0.04] px-3 py-2 text-[9px] text-red-300">
+                    {v5CandidateComparison.error}
+                  </div>
+                )}
+                {v5ComparisonMatchesFocus && v5CandidateComparison.status === "success" && v5CandidatePrediction && (
+                  <div className="mt-3 rounded-lg border border-violet-500/15 bg-violet-500/[0.035] px-3 py-2 text-[9px] text-slate-400">
+                    Same district-centre coordinates were requested for both outputs. The candidate result is experimental and is not a calibrated event probability or an official warning.
+                    <div className="mt-1 text-slate-500">
+                      Location: {Number(v5CandidatePrediction.location.latitude).toFixed(4)}, {Number(v5CandidatePrediction.location.longitude).toFixed(4)} · Generated {formatRelativeTime(v5CandidatePrediction.generated_at)}
+                    </div>
+                  </div>
+                )}
+                <div className="mt-2 text-[8px] leading-relaxed text-slate-600">
+                  Model-estimated susceptibility scores only. This manual test calls the separate candidate endpoint; it does not write to production prediction caches or replace the current model.
+                </div>
+              </div>
             </section>
 
             <section className="rounded-2xl border border-sky-500/10 bg-sky-500/[0.025] p-4 shadow-xl">

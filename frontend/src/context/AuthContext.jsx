@@ -11,237 +11,125 @@ import {
   USER_KEY,
 } from "../services/api";
 
-/* =========================================================
-   AUTH CONTEXT
-========================================================= */
-
 const AuthContext = createContext(null);
 
-/* =========================================================
-   AUTH PROVIDER
-========================================================= */
-
 export function AuthProvider({ children }) {
-  /* =======================================================
-     RESTORE USER
-  ======================================================= */
-
   const [user, setUser] = useState(() => {
     try {
-      const savedUser =
-        localStorage.getItem(USER_KEY);
-
-      return savedUser
-        ? JSON.parse(savedUser)
-        : null;
+      const savedUser = localStorage.getItem(USER_KEY);
+      return savedUser ? JSON.parse(savedUser) : null;
     } catch (error) {
-      console.error(
-        "Failed to restore saved user:",
-        error
-      );
-
+      console.error("Failed to restore saved user:", error);
       localStorage.removeItem(USER_KEY);
-
       return null;
     }
   });
 
   const [loading, setLoading] = useState(true);
 
-  /* =======================================================
-     RESTORE SESSION
-  ======================================================= */
-
   useEffect(() => {
     try {
-      const token =
-        localStorage.getItem(TOKEN_KEY);
-
-      const savedUser =
-        localStorage.getItem(USER_KEY);
-
+      const token = localStorage.getItem(TOKEN_KEY);
+      const savedUser = localStorage.getItem(USER_KEY);
       if (token && savedUser) {
         setUser(JSON.parse(savedUser));
-      } else if (!token) {
-        // No token = no authenticated session
+      } else {
         setUser(null);
-        localStorage.removeItem(USER_KEY);
+        if (!token) localStorage.removeItem(USER_KEY);
       }
     } catch (error) {
-      console.error(
-        "Failed to restore authentication:",
-        error
-      );
-
+      console.error("Failed to restore authentication:", error);
       localStorage.removeItem(TOKEN_KEY);
       localStorage.removeItem(USER_KEY);
-
       setUser(null);
     }
 
     setLoading(false);
 
-    /* =====================================================
-       HANDLE AUTH LOGOUT / SESSION EXPIRY
-    ===================================================== */
-
     const handleLogout = () => {
       localStorage.removeItem(TOKEN_KEY);
       localStorage.removeItem(USER_KEY);
-
-      // Compatibility cleanup
       localStorage.removeItem("access_token");
       localStorage.removeItem("user");
-
       setUser(null);
     };
 
-    window.addEventListener(
-      "auth:logout",
-      handleLogout
-    );
-
-    return () => {
-      window.removeEventListener(
-        "auth:logout",
-        handleLogout
-      );
-    };
+    window.addEventListener("auth:logout", handleLogout);
+    return () => window.removeEventListener("auth:logout", handleLogout);
   }, []);
 
-  /* =========================================================
-     REGISTER
-  ========================================================= */
-
-  async function register(
-    name,
-    email,
-    password
-  ) {
-    const data = await apiRequest(
-      "/api/auth/register",
-      {
-        method: "POST",
-        body: JSON.stringify({
-          name,
-          email,
-          password,
-        }),
-      }
-    );
-
-    return data;
+  async function register(name, email, password) {
+    return apiRequest("/api/auth/register", {
+      method: "POST",
+      body: JSON.stringify({ name, email, password }),
+    });
   }
 
-  /* =========================================================
-     LOGIN
-  ========================================================= */
+  // Step 1: password verification sends an OTP challenge; it must NOT save a JWT.
+  async function login(email, password) {
+    const data = await apiRequest("/api/auth/login", {
+      method: "POST",
+      body: JSON.stringify({ email, password }),
+    });
 
-  async function login(
-    email,
-    password
-  ) {
-    const data = await apiRequest(
-      "/api/auth/login",
-      {
-        method: "POST",
-        body: JSON.stringify({
-          email,
-          password,
-        }),
-      }
-    );
-
-    /* =====================================================
-       CHECK TOKEN
-    ===================================================== */
-
-    if (!data?.access_token) {
+    if (data?.otp_required !== true || !data?.challenge_id) {
       throw new Error(
-        "Authentication token was not received."
+        "OTP verification was not started. Deploy the updated backend and configure email delivery before signing in."
       );
-    }
-
-    /* =====================================================
-       SAVE TOKEN
-    ===================================================== */
-
-    localStorage.setItem(
-      TOKEN_KEY,
-      data.access_token
-    );
-
-    /* =====================================================
-       SAVE USER
-    ===================================================== */
-
-    if (data.user) {
-      localStorage.setItem(
-        USER_KEY,
-        JSON.stringify(data.user)
-      );
-
-      setUser(data.user);
-    } else {
-      // Even if backend doesn't return user,
-      // token is still saved.
-      setUser(null);
     }
 
     return data;
   }
 
-  /* =========================================================
-     LOGOUT
-  ========================================================= */
+  // Step 2: save authentication only when the backend returns a token after OTP verification.
+  async function verifyLoginOtp(challengeId, otp) {
+    const data = await apiRequest("/api/auth/verify-otp", {
+      method: "POST",
+      body: JSON.stringify({ challenge_id: challengeId, otp }),
+    });
+
+    if (!data?.access_token || !data?.user) {
+      throw new Error("The server did not return an authenticated session.");
+    }
+
+    localStorage.setItem(TOKEN_KEY, data.access_token);
+    localStorage.setItem(USER_KEY, JSON.stringify(data.user));
+    setUser(data.user);
+    return data;
+  }
+
+  async function resendLoginOtp(challengeId) {
+    return apiRequest("/api/auth/resend-otp", {
+      method: "POST",
+      body: JSON.stringify({ challenge_id: challengeId }),
+    });
+  }
 
   function logout() {
     localStorage.removeItem(TOKEN_KEY);
     localStorage.removeItem(USER_KEY);
-
-    // Compatibility cleanup
     localStorage.removeItem("access_token");
     localStorage.removeItem("user");
-
     setUser(null);
-
-    window.dispatchEvent(
-      new Event("auth:logout")
-    );
+    window.dispatchEvent(new Event("auth:logout"));
   }
-
-  /* =========================================================
-     CONTEXT VALUE
-  ========================================================= */
 
   const value = {
     user,
     loading,
     register,
     login,
+    verifyLoginOtp,
+    resendLoginOtp,
     logout,
     isAuthenticated: Boolean(user),
   };
 
-  return (
-    <AuthContext.Provider value={value}>
-      {children}
-    </AuthContext.Provider>
-  );
+  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
-
-/* =========================================================
-   USE AUTH
-========================================================= */
 
 export function useAuth() {
   const context = useContext(AuthContext);
-
-  if (!context) {
-    throw new Error(
-      "useAuth must be used inside AuthProvider"
-    );
-  }
-
+  if (!context) throw new Error("useAuth must be used inside AuthProvider");
   return context;
 }

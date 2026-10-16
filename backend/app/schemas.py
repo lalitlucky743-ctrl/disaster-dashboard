@@ -6,32 +6,40 @@ from pydantic import BaseModel, EmailStr, Field
 # =========================================================
 
 class RegisterRequest(BaseModel):
-
-    name: str = Field(
-        min_length=2,
-        max_length=100
-    )
-
+    name: str = Field(min_length=2, max_length=100)
     email: EmailStr
-
-    password: str = Field(
-        min_length=8,
-        max_length=256
-    )
+    password: str = Field(min_length=8, max_length=256)
 
 
 class LoginRequest(BaseModel):
-
     email: EmailStr
+    password: str = Field(min_length=1, max_length=256)
 
-    password: str = Field(
-        min_length=1,
-        max_length=256
-    )
+
+class LoginOTPResponse(BaseModel):
+    otp_required: bool = True
+    challenge_id: str
+    email_masked: str
+    expires_in_seconds: int
+    message: str
+
+
+class VerifyLoginOTPRequest(BaseModel):
+    challenge_id: str = Field(min_length=32, max_length=128)
+    otp: str = Field(min_length=6, max_length=6)
+
+
+class ResendLoginOTPRequest(BaseModel):
+    challenge_id: str = Field(min_length=32, max_length=128)
+
+
+class LoginOTPResendResponse(BaseModel):
+    message: str
+    expires_in_seconds: int
+    resend_available_in_seconds: int
 
 
 class UserResponse(BaseModel):
-
     id: int
     name: str
     email: EmailStr
@@ -41,7 +49,6 @@ class UserResponse(BaseModel):
 
 
 class TokenResponse(BaseModel):
-
     access_token: str
     token_type: str
     user: UserResponse
@@ -51,27 +58,13 @@ class TokenResponse(BaseModel):
 # AI
 # =========================================================
 
-# =========================================================
-# AI
-# =========================================================
-
 class AIRequest(BaseModel):
-
-    question: str = Field(
-        min_length=1,
-        max_length=10000
-    )
-
-    location: str | None = Field(
-        default=None,
-        max_length=200
-    )
+    question: str = Field(min_length=1, max_length=10000)
+    location: str | None = Field(default=None, max_length=200)
 
 
 class AIResponse(BaseModel):
-
     answer: str
-
     status: str = "ready"
 
 
@@ -80,7 +73,6 @@ class AIResponse(BaseModel):
 # =========================================================
 
 class RiskData(BaseModel):
-
     overall: str
     weather: str
     flood: str
@@ -89,7 +81,6 @@ class RiskData(BaseModel):
 
 
 class AlertData(BaseModel):
-
     id: int
     type: str
     severity: str
