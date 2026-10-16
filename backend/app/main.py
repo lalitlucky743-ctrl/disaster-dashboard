@@ -10,7 +10,6 @@ from .routers import (
     weather,
     ml,
     alerts,
-    email_oauth,
     weather_proxy,
 )
 
@@ -134,17 +133,6 @@ app.include_router(
     alerts.router,
     prefix="/api/alerts",
     tags=["Official Disaster Alerts"],
-)
-
-
-# ==========================================================
-# GMAIL OAUTH
-# ==========================================================
-
-app.include_router(
-    email_oauth.router,
-    prefix="/api/email/oauth",
-    tags=["Gmail OAuth"],
 )
 
 

@@ -1,3 +1,4 @@
+
 const API_BASE_URL = (
   import.meta.env.VITE_API_URL ||
   "https://disaster-dashboard-kgbb.onrender.com"
@@ -16,6 +17,7 @@ function clearAuth() {
   localStorage.removeItem(TOKEN_KEY);
   localStorage.removeItem(USER_KEY);
 
+  // Clear legacy authentication keys as well.
   localStorage.removeItem("access_token");
   localStorage.removeItem("user");
 
@@ -27,8 +29,6 @@ function isPublicAuthEndpoint(endpoint) {
   return [
     "/api/auth/register",
     "/api/auth/login",
-    "/api/auth/verify-otp",
-    "/api/auth/resend-otp",
   ].some(
     (path) =>
       endpoint === path ||
@@ -51,7 +51,7 @@ async function request(endpoint, options = {}) {
     ...(options.headers || {}),
   };
 
-  // Don't attach an existing JWT to public login or OTP requests.
+  // Do not attach an existing JWT to registration or login.
   if (token && !publicAuthEndpoint) {
     headers.Authorization = `Bearer ${token}`;
   }
@@ -59,13 +59,10 @@ async function request(endpoint, options = {}) {
   let response;
 
   try {
-    response = await fetch(
-      `${API_BASE_URL}${endpoint}`,
-      {
-        ...options,
-        headers,
-      }
-    );
+    response = await fetch(`${API_BASE_URL}${endpoint}`, {
+      ...options,
+      headers,
+    });
   } catch (error) {
     console.error("API connection error:", error);
 
@@ -90,8 +87,8 @@ async function request(endpoint, options = {}) {
     data = null;
   }
 
-  // A 401 from a protected endpoint expires the session.
-  // Login/OTP errors should preserve their own error messages.
+  // A 401 from a protected endpoint expires the current session.
+  // Login errors should retain their original error messages.
   if (
     response.status === 401 &&
     token &&
