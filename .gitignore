@@ -16,3 +16,8 @@ backend/disaster.db
 
 # ML generated model
 backend/ml/disaster_model.pkl
+backend/credentials.json
+backend/token.json
+backend/.env
+backend/.venv/
+backend/*.zip

@@ -1,12 +1,21 @@
+﻿
 """Email delivery and OTP hashing helpers for login verification."""
 
+import base64
 import hashlib
 import hmac
+import json
 import os
 import secrets
-import smtplib
-import ssl
-from email.message import EmailMessage
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from html import escape
+
+from cryptography.fernet import Fernet
+from google.oauth2.credentials import Credentials
+from googleapiclient.discovery import build
+
+from .gmail_oauth_store import get_encrypted_credentials
 
 
 OTP_LENGTH = 6
@@ -15,6 +24,10 @@ OTP_MAX_ATTEMPTS = 5
 OTP_MAX_RESENDS = 3
 OTP_RESEND_COOLDOWN_SECONDS = 60
 LOGIN_SEND_COOLDOWN_SECONDS = 20
+GMAIL_SCOPE = ["https://www.googleapis.com/auth/gmail.send"]
+
+
+# Keep your existing OTP hashing functions here unchanged.
 
 
 def generate_login_otp() -> str:
@@ -38,72 +51,82 @@ def hash_login_otp(challenge_id: str, otp: str) -> str:
     ).hexdigest()
 
 
+
+
 def send_login_otp_email(recipient: str, otp: str) -> None:
-    host = os.getenv("SMTP_HOST", "").strip()
-    username = os.getenv("SMTP_USERNAME", "").strip()
-    password = os.getenv("SMTP_PASSWORD", "").strip()
-    sender = os.getenv("SMTP_FROM_EMAIL", username).strip()
+    encryption_key = os.getenv(
+        "GMAIL_TOKEN_ENCRYPTION_KEY", ""
+    ).strip()
+    sender = os.getenv(
+        "GMAIL_SENDER_EMAIL", "lucybisht77@gmail.com"
+    ).strip()
 
-    port = int(os.getenv("SMTP_PORT", "587"))
+    if not encryption_key or not sender:
+        raise RuntimeError("Gmail configuration is incomplete.")
 
-    use_ssl = (
-        os.getenv("SMTP_USE_SSL", "false").strip().lower()
-        in {"1", "true", "yes"}
-    )
-
-    use_tls = (
-        os.getenv("SMTP_USE_TLS", "true").strip().lower()
-        in {"1", "true", "yes"}
-    )
-
-    if not host or not username or not password or not sender:
-        raise RuntimeError("SMTP email delivery is not configured.")
-
-    if use_ssl and use_tls:
+    encrypted = get_encrypted_credentials()
+    if not encrypted:
         raise RuntimeError(
-            "Set only one of SMTP_USE_SSL or SMTP_USE_TLS to true."
+            "Gmail is not authorized. Complete the OAuth setup first."
         )
 
-    message = EmailMessage()
-    message["Subject"] = (
-        "Your Disaster Intelligence Platform login code"
-    )
-    message["From"] = sender
-    message["To"] = recipient
+    try:
+        cipher = Fernet(encryption_key.encode())
+        credentials_json = cipher.decrypt(
+            encrypted.encode()
+        ).decode()
 
-    message.set_content(
-        "Your Disaster Intelligence Platform login verification code is: "
-        f"{otp}\n\n"
-        "This code expires in 5 minutes and can be used only once. "
-        "If you did not try to sign in, you can ignore this email. "
-        "Do not share this code with anyone.\n"
-    )
+        credentials = Credentials.from_authorized_user_info(
+            json.loads(credentials_json),
+            scopes=GMAIL_SCOPE,
+        )
 
-    timeout_seconds = 15
+        message = MIMEMultipart("alternative")
+        message["To"] = recipient
+        message["From"] = sender
+        message["Subject"] = (
+            "Your Uttarakhand Disaster Intelligence Platform login code"
+        )
 
-    if use_ssl:
-        with smtplib.SMTP_SSL(
-            host,
-            port,
-            timeout=timeout_seconds,
-            context=ssl.create_default_context(),
-        ) as server:
-            server.login(username, password)
-            server.send_message(message)
+        message.attach(MIMEText(
+            f"Your login verification code is: {otp}\n\n"
+            "This code expires in 5 minutes. "
+            "Do not share it with anyone.",
+            "plain",
+        ))
 
-    else:
-        with smtplib.SMTP(
-            host,
-            port,
-            timeout=timeout_seconds,
-        ) as server:
-            server.ehlo()
+        message.attach(MIMEText(
+            "<p>Your login verification code is:</p>"
+            f"<h2>{escape(otp)}</h2>"
+            "<p>This code expires in 5 minutes. "
+            "Do not share it with anyone.</p>",
+            "html",
+        ))
 
-            if use_tls:
-                server.starttls(
-                    context=ssl.create_default_context()
-                )
-                server.ehlo()
+        raw = base64.urlsafe_b64encode(
+            message.as_bytes()
+        ).decode("utf-8")
 
-            server.login(username, password)
-            server.send_message(message)
+        service = build(
+            "gmail",
+            "v1",
+            credentials=credentials,
+            cache_discovery=False,
+        )
+
+        result = service.users().messages().send(
+            userId="me",
+            body={"raw": raw},
+        ).execute()
+
+        if not result.get("id"):
+            raise RuntimeError("Gmail did not confirm email submission.")
+
+    except Exception as exc:
+        # Keep OTPs, OAuth tokens and credentials out of error logs.
+        raise RuntimeError(
+            "Gmail OTP delivery failed. Check Gmail OAuth configuration."
+        ) from exc
+
+
+

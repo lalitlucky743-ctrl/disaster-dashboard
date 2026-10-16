@@ -1,14 +1,18 @@
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .database import Base, engine
-from .routers import auth
-from .routers import dashboard
-from .routers import ai
-from .routers import weather
-from .routers import ml
-from .routers import alerts
-from app.routers import weather_proxy
+from .routers import (
+    auth,
+    dashboard,
+    ai,
+    weather,
+    ml,
+    alerts,
+    email_oauth,
+    weather_proxy,
+)
 
 
 # ==========================================================
@@ -40,19 +44,14 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        # Local Vite development
         "http://localhost:5173",
         "http://localhost:5174",
         "http://localhost:5175",
         "http://localhost:5176",
-
-        # Localhost alternatives
         "http://127.0.0.1:5173",
         "http://127.0.0.1:5174",
         "http://127.0.0.1:5175",
         "http://127.0.0.1:5176",
-
-        # Production frontend
         "https://disaster-dashboard-vert.vercel.app",
     ],
     allow_credentials=True,
@@ -84,7 +83,7 @@ app.include_router(
 
 
 # ==========================================================
-# GROQ AI INTELLIGENCE
+# AI INTELLIGENCE
 # ==========================================================
 
 app.include_router(
@@ -103,7 +102,6 @@ app.include_router(
     prefix="/api/weather",
     tags=["Live Weather"],
 )
-
 
 
 # ==========================================================
@@ -130,14 +128,6 @@ app.include_router(
 
 # ==========================================================
 # OFFICIAL DISASTER ALERTS
-#
-# Sources:
-# - IMD
-# - SACHET / NDMA
-# - Future verified official sources
-#
-# IMPORTANT:
-# This router must NEVER generate fake/default alerts.
 # ==========================================================
 
 app.include_router(
@@ -148,13 +138,21 @@ app.include_router(
 
 
 # ==========================================================
+# GMAIL OAUTH
+# ==========================================================
+
+app.include_router(
+    email_oauth.router,
+    prefix="/api/email/oauth",
+    tags=["Gmail OAuth"],
+)
+
+
+# ==========================================================
 # ROOT
 # ==========================================================
 
-@app.get(
-    "/",
-    tags=["System"],
-)
+@app.get("/", tags=["System"])
 def root():
     return {
         "status": "operational",
@@ -167,19 +165,10 @@ def root():
 # HEALTH CHECK
 # ==========================================================
 
-@app.get(
-    "/health",
-    tags=["System"],
-)
+@app.get("/health", tags=["System"])
 def health():
-    return {
-        "status": "healthy",
-    }
+    return {"status": "healthy"}
 
-
-# ==========================================================
-# HEAD HEALTH CHECK
-# ==========================================================
 
 @app.head("/health")
 def health_head():
