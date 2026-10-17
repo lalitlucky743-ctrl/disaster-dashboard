@@ -414,11 +414,16 @@ def extract_dem_features(latitude, longitude):
     latitude = float(latitude)
     longitude = float(longitude)
 
+    # Render may not contain the local DEM raster. Use real Copernicus
+    # elevation data rather than failing or inventing terrain values.
+    if not os.path.exists(DEM_PATH):
+        return _fetch_copernicus_glo90_terrain(latitude, longitude)
+
     with load_dem() as dem:
         row, col = dem.index(longitude, latitude)
 
         if not (0 <= row < dem.height and 0 <= col < dem.width):
-            raise ValueError("Requested location is outside the available DEM coverage.")
+            return _fetch_copernicus_glo90_terrain(latitude, longitude)
 
         original_row, original_col = row, col
         found = _find_real_dem_center(dem, row, col)
