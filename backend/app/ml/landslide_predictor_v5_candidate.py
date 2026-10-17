@@ -36,8 +36,14 @@ _HTTP_ADAPTER = HTTPAdapter(max_retries=_HTTP_RETRY)
 _HTTP_SESSION.mount("https://", _HTTP_ADAPTER)
 _HTTP_SESSION.mount("http://", _HTTP_ADAPTER)
 
-import rasterio
-from rasterio.windows import Window
+# Rasterio is optional in hosted runtimes where native
+# GDAL/PROJ/expat libraries may be unavailable.
+try:
+    import rasterio
+    from rasterio.windows import Window
+except (ImportError, OSError):
+    rasterio = None
+    Window = None
 
 
 # ============================================================
@@ -417,6 +423,11 @@ def extract_dem_features(latitude, longitude):
     # Render may not contain the local DEM raster. Use real Copernicus
     # elevation data rather than failing or inventing terrain values.
     if not os.path.exists(DEM_PATH):
+        return _fetch_copernicus_glo90_terrain(latitude, longitude)
+
+    # Use genuine Copernicus elevation if local raster support
+    # or the optional local DEM file is unavailable.
+    if rasterio is None or not os.path.exists(DEM_PATH):
         return _fetch_copernicus_glo90_terrain(latitude, longitude)
 
     with load_dem() as dem:
