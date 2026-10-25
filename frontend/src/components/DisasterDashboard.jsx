@@ -49,6 +49,7 @@ import {
 import "leaflet/dist/leaflet.css";
 
 import { dashboardApi } from "../api/dashboardApi";
+import AutomaticModelMonitoring from "./AutomaticModelMonitoring";
 import { aiApi } from "../api/aiApi";
 import { useAuth } from "../context/AuthContext";
 
@@ -2436,10 +2437,12 @@ export default function DisasterDashboard() {
       ? tasks
       : tasks.filter((district) => !cachedResults[district.id]);
 
-    if (!force && Object.keys(cachedResults).length) {
-      setBaseDistricts((current) => mergeDistrictMl(current, cachedResults));
-      setMlStatus("live");
-    }
+    if (Object.keys(cachedResults).length) {
+  setBaseDistricts((current) =>
+    mergeDistrictMl(current, cachedResults)
+  );
+  setMlStatus("live");
+}
 
     if (!tasksToFetch.length) {
       mlSyncInFlightRef.current = false;
@@ -3604,6 +3607,7 @@ export default function DisasterDashboard() {
         <SectionHeader title="Live Monitoring" subtitle="Real-time geospatial flood-risk monitoring" icon={Radio} action={<div className="flex items-center gap-2"><StatusDot active={weatherStatus === "live"} pulse={weatherStatus === "live"} /><span className="text-[9px] text-emerald-400">MONITORING {weatherStatus === "live" ? "ACTIVE" : "DEGRADED"}</span></div>} />
         <RiskMap districts={districts} selectedDisaster={selectedDisaster} selectedRisk={selectedRisk} onSelectDistrict={handleDistrictSelect} onSelectLocation={handleLocationSelect} onPrefetchLocations={handlePrefetchLocations} locationMlLoadingByKey={locationMlLoadingByKey} alerts={alerts} selectedPlace={selectedPlace} mapResetSignal={mapResetSignal} />
       </section>
+            <AutomaticModelMonitoring />
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <section className="rounded-2xl border border-slate-800 bg-slate-900/80 p-4">

@@ -99,3 +99,149 @@ def predict_landslide_v5_candidate(data: RiskInput):
             status_code=500,
             detail=f"Landslide V5 candidate test failed: {str(e)}",
         )
+
+# ============================================================
+# LANDSLIDE MODEL COMPARISON — LOCAL TESTING
+# Existing production and candidate endpoints remain unchanged.
+# ============================================================
+
+def _run_landslide_model_safely(model_function, latitude, longitude):
+    try:
+        result = model_function(
+            latitude=latitude,
+            longitude=longitude,
+        )
+
+        if not isinstance(result, dict):
+            raise ValueError("Model returned a non-dictionary result")
+
+        score = result.get("risk_score")
+        level = result.get("risk_level")
+        version = result.get("model_version")
+
+        if score is None or level is None or not version:
+            raise ValueError(
+                "Model result is missing risk_score, risk_level, "
+                "or model_version"
+            )
+
+        return {
+            "status": "ok",
+            "result": result,
+        }
+
+    except Exception as exc:
+        print(f"❌ Model comparison prediction failed: {exc}")
+        return {
+            "status": "error",
+            "error": str(exc),
+        }
+
+
+@router.post("/compare-landslide-models")
+def compare_landslide_models(data: RiskInput):
+    """
+    Compare the existing production model with experimental V5.
+    This endpoint does not replace either model.
+    """
+
+    production = _run_landslide_model_safely(
+        predict_landslide_live,
+        data.latitude,
+        data.longitude,
+    )
+
+    # Lazy import keeps candidate-only dependencies isolated.
+    try:
+        from ..ml.landslide_predictor_v5_candidate import (
+            predict_landslide_live as predict_v5_live,
+        )
+
+        candidate = _run_landslide_model_safely(
+            predict_v5_live,
+            data.latitude,
+            data.longitude,
+        )
+
+        if candidate["status"] == "ok":
+            version = str(
+                candidate["result"].get("model_version", "")
+            )
+
+            expected_prefix = (
+                "landslide-real-gis-v3.3-candidate-v5-extra-trees-no_coords14"
+            )
+
+            if not version.startswith(expected_prefix):
+                candidate = {
+                    "status": "error",
+                    "error": (
+                        "Unexpected candidate model version: "
+                        f"{version or '<missing>'}"
+                    ),
+                }
+
+    except Exception as exc:
+        candidate = {
+            "status": "error",
+            "error": str(exc),
+        }
+
+    production_result = production.get("result")
+    candidate_result = candidate.get("result")
+
+    score_difference = None
+    risk_levels_agree = None
+
+    if production_result and candidate_result:
+        try:
+            production_score = float(
+                production_result["risk_score"]
+            )
+            candidate_score = float(
+                candidate_result["risk_score"]
+            )
+
+            score_difference = round(
+                abs(production_score - candidate_score), 2
+            )
+
+            risk_levels_agree = (
+                str(production_result["risk_level"]).upper()
+                == str(candidate_result["risk_level"]).upper()
+            )
+        except (TypeError, ValueError, KeyError):
+            pass
+
+    if production_result and candidate_result:
+        comparison_status = "complete"
+    elif production_result or candidate_result:
+        comparison_status = "partial"
+    else:
+        comparison_status = "failed"
+
+    return {
+        "comparison_status": comparison_status,
+        "location": {
+            "latitude": data.latitude,
+            "longitude": data.longitude,
+        },
+        "production": production,
+        "candidate_v5": candidate,
+        "comparison": {
+            "risk_levels_agree": risk_levels_agree,
+            "absolute_score_difference": score_difference,
+            "score_interpretation": (
+                "Absolute difference between model-estimated scores; "
+                "not a difference in calibrated real-world probabilities."
+            ),
+        },
+        "official_verification": {
+            "status": "not_run",
+            "message": (
+                "Official warning verification will be implemented "
+                "as a separate step."
+            ),
+        },
+        "production_model_modified": False,
+    }

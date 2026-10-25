@@ -1,4 +1,6 @@
 
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -11,14 +13,31 @@ from .routers import (
     ml,
     alerts,
     weather_proxy,
+    monitoring,
+)
+from .services.monitoring.scheduler import (
+    start_monitoring,
+    stop_monitoring,
 )
 
 
 # ==========================================================
-# DATABASE
+# APPLICATION LIFESPAN
 # ==========================================================
 
-Base.metadata.create_all(bind=engine)
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Register imported SQLAlchemy models and create missing tables.
+    Base.metadata.create_all(bind=engine)
+
+    # Start the automatic monitoring loop.
+    start_monitoring()
+
+    try:
+        yield
+    finally:
+        # Stop the loop cleanly during application shutdown.
+        await stop_monitoring()
 
 
 # ==========================================================
@@ -33,6 +52,7 @@ app = FastAPI(
         "weather monitoring, ML-based risk prediction, "
         "and official disaster alerts."
     ),
+    lifespan=lifespan,
 )
 
 
@@ -133,6 +153,16 @@ app.include_router(
     alerts.router,
     prefix="/api/alerts",
     tags=["Official Disaster Alerts"],
+)
+
+
+# ==========================================================
+# AUTOMATIC MONITORING
+# ==========================================================
+
+app.include_router(
+    monitoring.router,
+    prefix="/api/monitoring",
 )
 
 

@@ -6,6 +6,8 @@ from zoneinfo import ZoneInfo
 import numpy as np
 import pandas as pd
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 # Rasterio is optional at runtime. Render containers may not provide the
 # native GEOS/PROJ/expat libraries required by the rasterio wheel.
@@ -17,6 +19,23 @@ try:
 except (ImportError, OSError):
     rasterio = None
     Window = None
+
+
+# Retry transient network failures for live terrain and weather requests.
+_LANDSLIDE_HTTP_RETRY = Retry(
+    total=2,
+    connect=2,
+    read=2,
+    status=2,
+    backoff_factor=0.5,
+    status_forcelist=(408, 429, 500, 502, 503, 504),
+    allowed_methods=frozenset({"GET"}),
+    respect_retry_after_header=True,
+)
+_LANDSLIDE_HTTP_SESSION = requests.Session()
+_LANDSLIDE_HTTP_ADAPTER = HTTPAdapter(max_retries=_LANDSLIDE_HTTP_RETRY)
+_LANDSLIDE_HTTP_SESSION.mount("https://", _LANDSLIDE_HTTP_ADAPTER)
+_LANDSLIDE_HTTP_SESSION.mount("http://", _LANDSLIDE_HTTP_ADAPTER)
 
 
 # ============================================================
@@ -38,7 +57,8 @@ OPEN_METEO_ELEVATION_URL = "https://api.open-meteo.com/v1/elevation"
 LOCAL_TIMEZONE = "Asia/Kolkata"
 
 # Keep the search local and real. We never invent an elevation value.
-DEM_CENTER_SEARCH_RADII = (15, 50, 100, 250, 500, 1000)
+DEM_CENTER_SEARCH_RADII = (15, 25, 40)
+MAX_DEM_SAMPLE_DISTANCE_METERS = 1000.0
 TERRAIN_WINDOW = 11
 TERRAIN_RADIUS = TERRAIN_WINDOW // 2
 
@@ -345,7 +365,7 @@ def _fetch_copernicus_glo90_terrain(latitude, longitude):
         "longitude": ",".join(f"{lon:.6f}" for _, lon in points),
     }
 
-    response = requests.get(
+    response = _LANDSLIDE_HTTP_SESSION.get(
         OPEN_METEO_ELEVATION_URL,
         params=params,
         timeout=30,
@@ -420,6 +440,20 @@ def extract_dem_features(latitude, longitude):
             return _fetch_copernicus_glo90_terrain(latitude, longitude)
 
         row, col = found
+
+        # Reject distant DEM pixels across large NoData areas.
+        sampled_lon, sampled_lat = dem.xy(row, col)
+        meters_per_degree_lat = 111320.0
+        meters_per_degree_lon = 111320.0 * np.cos(np.radians(latitude))
+        sampling_distance_m = float(
+            np.hypot(
+                (float(sampled_lat) - latitude) * meters_per_degree_lat,
+                (float(sampled_lon) - longitude) * meters_per_degree_lon,
+            )
+        )
+        if sampling_distance_m > MAX_DEM_SAMPLE_DISTANCE_METERS:
+            return _fetch_copernicus_glo90_terrain(latitude, longitude)
+
         used_nearest_valid_pixel = (row != original_row or col != original_col)
 
         row_start = max(0, row - TERRAIN_RADIUS)
@@ -558,7 +592,7 @@ def fetch_live_weather(latitude, longitude):
         "precipitation_unit": "mm",
     }
 
-    response = requests.get(
+    response = _LANDSLIDE_HTTP_SESSION.get(
         OPEN_METEO_URL,
         params=params,
         timeout=30,

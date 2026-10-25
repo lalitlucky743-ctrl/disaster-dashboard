@@ -1,4 +1,4 @@
-"""Candidate-only live prediction smoke test for V5 Extra Trees (14 features).
+﻿"""Candidate-only live prediction smoke test for V5 Extra Trees (14 features).
 
 Place this file beside the existing predictor in backend/app/ml/.
 It loads only app/ml/data/landslide/landslide_model_candidate_v5_extra_trees_no_coords14.pkl.
@@ -586,7 +586,7 @@ def fetch_live_weather(latitude, longitude):
     response = _HTTP_SESSION.get(
         OPEN_METEO_URL,
         params=params,
-        timeout=(5, 12),
+        timeout=(10, 30),
     )
     response.raise_for_status()
 

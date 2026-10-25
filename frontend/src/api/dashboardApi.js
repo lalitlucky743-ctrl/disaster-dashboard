@@ -14,9 +14,7 @@ export const dashboardApi = {
   },
 
   getDistrictLocations(districtId) {
-    return api.get(
-      `/api/dashboard/districts/${districtId}/locations`
-    );
+    return api.get(`/api/dashboard/districts/${districtId}/locations`);
   },
 
   getRiskZones() {
@@ -27,13 +25,25 @@ export const dashboardApi = {
     return api.get("/api/monitoring/live");
   },
 
+  getAutomaticMonitoringStatus() {
+    return api.get("/api/monitoring/status");
+  },
+
+  getAutomaticMonitoringHistory(limit = 10) {
+    return api.get(
+      `/api/monitoring/history?limit=${encodeURIComponent(limit)}`
+    );
+  },
+
+  runAutomaticMonitoringOnce() {
+    return api.post("/api/monitoring/run-once", {}, { timeoutMs: 180000 });
+  },
+
   getAnalytics() {
     return api.get("/api/analytics/overview");
   },
 
   getWeather(location) {
-    return api.get(
-      `/api/weather/${encodeURIComponent(location)}`
-    );
+    return api.get(`/api/weather/${encodeURIComponent(location)}`);
   },
 };

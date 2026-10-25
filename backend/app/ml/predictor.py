@@ -1,11 +1,14 @@
 import os
 import pickle
+import threading
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 
 # ============================================================
@@ -37,6 +40,52 @@ EXPECTED_FEATURES = [
 ]
 
 _model_package = None
+
+
+# ============================================================
+# BOUNDED HTTP RETRIES FOR LIVE WEATHER
+# ============================================================
+
+# Retry only idempotent GET requests after transient connection/read
+# failures or temporary upstream 5xx responses. HTTP 429 is deliberately
+# excluded so we do not add pressure when the service rate-limits us.
+# Retry(total=2) means no more than two retries after the first attempt.
+_OPEN_METEO_RETRY = Retry(
+    total=2,
+    connect=2,
+    read=1,
+    status=1,
+    backoff_factor=0.4,
+    status_forcelist=(500, 502, 503, 504),
+    allowed_methods=frozenset({"GET"}),
+    respect_retry_after_header=False,
+    raise_on_status=False,
+)
+
+# Keep one Session per worker thread rather than sharing a mutable requests
+# Session across concurrent FastAPI worker threads.
+_OPEN_METEO_THREAD_LOCAL = threading.local()
+
+
+def _get_open_meteo_session():
+    session = getattr(_OPEN_METEO_THREAD_LOCAL, "session", None)
+    if session is None:
+        session = requests.Session()
+        adapter = HTTPAdapter(
+            max_retries=_OPEN_METEO_RETRY,
+            pool_connections=4,
+            pool_maxsize=4,
+        )
+        session.mount("https://", adapter)
+        session.mount("http://", adapter)
+        session.headers.update(
+            {
+                "Accept": "application/json",
+                "User-Agent": "Uttarakhand-Disaster-Intelligence-Platform/1.0",
+            }
+        )
+        _OPEN_METEO_THREAD_LOCAL.session = session
+    return session
 
 
 # ============================================================
@@ -95,7 +144,6 @@ def fetch_live_weather(latitude, longitude):
         "longitude": float(longitude),
         "past_days": 35,
         "forecast_days": 1,
-
         # Current observations are for the dashboard/UI.
         "current": (
             "temperature_2m,"
@@ -104,7 +152,6 @@ def fetch_live_weather(latitude, longitude):
             "rain,"
             "weather_code"
         ),
-
         # Daily fields used for the ML features.
         # No daily max/min, rain_sum, or weather_code is needed by V6.3.
         "daily": (
@@ -112,20 +159,61 @@ def fetch_live_weather(latitude, longitude):
             "relative_humidity_2m_mean,"
             "precipitation_sum"
         ),
-
         "timezone": LOCAL_TIMEZONE,
         "temperature_unit": "celsius",
         "precipitation_unit": "mm",
     }
 
-    response = requests.get(
-        OPEN_METEO_URL,
-        params=params,
-        timeout=30,
-    )
-    response.raise_for_status()
+    try:
+        # A short connect timeout and bounded read timeout make the request
+        # fail predictably instead of occupying a worker for a long time.
+        # The mounted adapter retries transient connection resets itself.
+        response = _get_open_meteo_session().get(
+            OPEN_METEO_URL,
+            params=params,
+            timeout=(3, 12),
+        )
+        response.raise_for_status()
+    except requests.exceptions.HTTPError as exc:
+        error_response = exc.response
+        status_code = (
+            error_response.status_code
+            if error_response is not None
+            else None
+        )
+        if error_response is not None:
+            error_response.close()
+        if status_code == 429:
+            raise RuntimeError(
+                "Open-Meteo rate limit (HTTP 429). Prediction stopped; "
+                "no substitute or fabricated weather values were used."
+            ) from exc
+        raise RuntimeError(
+            f"Open-Meteo returned HTTP {status_code} after bounded retries."
+        ) from exc
+    except requests.exceptions.Timeout as exc:
+        raise RuntimeError(
+            "Open-Meteo weather request timed out after bounded retries."
+        ) from exc
+    except requests.exceptions.ConnectionError as exc:
+        raise RuntimeError(
+            "Open-Meteo connection failed after bounded retries "
+            f"({type(exc).__name__})."
+        ) from exc
+    except requests.exceptions.RequestException as exc:
+        raise RuntimeError(
+            f"Open-Meteo request failed ({type(exc).__name__})."
+        ) from exc
 
-    payload = response.json()
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise RuntimeError("Open-Meteo returned invalid JSON.") from exc
+    finally:
+        response.close()
+
+    if not isinstance(payload, dict):
+        raise RuntimeError("Open-Meteo response has an invalid structure.")
 
     if "daily" not in payload:
         raise RuntimeError("Open-Meteo daily weather data was not returned.")
@@ -433,25 +521,17 @@ def predict_risk_live(latitude, longitude):
     model = package["model"]
     features = list(package["features"])
 
-    # --------------------------------------------------------
     # REAL LIVE WEATHER
-    # --------------------------------------------------------
     payload = fetch_live_weather(latitude, longitude)
 
-    # --------------------------------------------------------
     # COMPLETED DAILY WEATHER ONLY
-    # --------------------------------------------------------
     daily_df = build_daily_dataframe(payload)
     daily_df = add_rainfall_features(daily_df)
 
-    # --------------------------------------------------------
     # EXACT 8-FEATURE V6.3 INPUT
-    # --------------------------------------------------------
     X = create_model_input(daily_df, features)
 
-    # --------------------------------------------------------
     # PROBABILITY
-    # --------------------------------------------------------
     probabilities = model.predict_proba(X)[0]
     class_probabilities = dict(
         zip(model.classes_, probabilities)
@@ -468,9 +548,7 @@ def predict_risk_live(latitude, longitude):
     risk_score = round(high_probability * 100.0)
     risk_level = probability_to_risk(high_probability)
 
-    # --------------------------------------------------------
     # CURRENT WEATHER FOR UI
-    # --------------------------------------------------------
     current_weather = get_current_hourly_weather(payload)
 
     current_missing = [

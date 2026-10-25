@@ -7,6 +7,7 @@ from sqlalchemy import (
     ForeignKey,
     Integer,
     String,
+    Text,
 )
 
 from .database import Base
@@ -50,3 +51,12 @@ class LoginOTPChallenge(Base):
     attempts = Column(Integer, default=0, nullable=False)
     resend_count = Column(Integer, default=0, nullable=False)
     consumed = Column(Boolean, default=False, nullable=False, index=True)
+class MonitoringRun(Base):
+    __tablename__ = "monitoring_runs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    started_at = Column(DateTime, nullable=False, index=True)
+    finished_at = Column(DateTime, nullable=False)
+    status = Column(String(30), nullable=False)
+    results_json = Column(Text, nullable=False)
+    error = Column(Text, nullable=True)
