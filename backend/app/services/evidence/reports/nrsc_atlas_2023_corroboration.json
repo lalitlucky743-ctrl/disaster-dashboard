@@ -1,0 +1,304 @@
+{
+  "available": true,
+  "generated_at": "2026-11-10T11:28:15.907405+00:00",
+  "candidate_count": 2,
+  "source_count": 3,
+  "global_status": "documentary_corroboration_only",
+  "human_review_required": true,
+  "verification_status": "not_verified",
+  "model_accuracy": "not_evaluated",
+  "eligible_for_training_or_model_validation": false,
+  "sources": [
+    {
+      "source_id": "pib_gsi_chamoli_2021",
+      "source_name": "GSI technical findings republished by Press Information Bureau",
+      "publisher": "Ministry of Mines / Geological Survey of India (hosted by PIB)",
+      "publication_date": "2021-06-28",
+      "url": "https://www.pib.gov.in/PressReleasePage.aspx?PRID=1730923&lang=2&reg=48",
+      "kind": "html",
+      "status": "ok",
+      "evidence_role": "claim_check",
+      "title": "Press Release Page | Press Information Bureau",
+      "pages_total": null,
+      "pages_processed": null,
+      "fetched_at": "2026-11-10T11:27:58.046579+00:00"
+    },
+    {
+      "source_id": "nidm_india_disaster_report_2013",
+      "source_name": "India Disaster Report 2013",
+      "publisher": "National Institute of Disaster Management, Ministry of Home Affairs",
+      "publication_date": "2014",
+      "url": "https://nidm.mha.gov.in/PDF/pubs/India%20Disaster%20Report%202013.pdf",
+      "kind": "pdf",
+      "status": "ok",
+      "evidence_role": "claim_check",
+      "title": "India Disaster Report 2013",
+      "pages_total": 124,
+      "pages_processed": 124,
+      "fetched_at": "2026-11-10T11:28:15.875419+00:00"
+    },
+    {
+      "source_id": "pib_culture_kedarnath_2013",
+      "source_name": "Kedarnath restoration and flash-flood context",
+      "publisher": "Ministry of Culture, Government of India (hosted by PIB)",
+      "publication_date": "2013-11-19",
+      "url": "https://www.pib.gov.in/newsite/PrintRelease.aspx?lang=2&reg=48&relid=100700",
+      "kind": "html",
+      "status": "ok",
+      "evidence_role": "context_only",
+      "title": "Conservation Work of Shri Kedarnath Temple",
+      "pages_total": null,
+      "pages_processed": null,
+      "fetched_at": "2026-11-10T11:28:15.875419+00:00"
+    }
+  ],
+  "candidates": [
+    {
+      "candidate_id": "nrsc_atlas_raunthi_gad_2021",
+      "event_name": "Raunthi Gad landslide",
+      "event_type": "rock_fall_and_debris_flow_as_described_by_source",
+      "event_date_start": "2021-02-07",
+      "event_date_end": "2021-02-07",
+      "place_name": "Raunthi Gad",
+      "state": null,
+      "district": null,
+      "source_document_id": "nrsc_landslide_atlas_2023",
+      "pdf_page_number": 28,
+      "figure_number": 4,
+      "evidence_excerpt": "National Remote Sensing Centre, ISRO, Hyderabad nrsc Landslide Atlas of India 13 Figure 4. Damage caused by the Raunthi Gad landslide. Synoptic view of the affected region by Raunthi Gad rock fall and Debris flow (7 Feb 2021 ) as seen from Resourcesat-2A LISS IV image (08 February 2021) shown in FCC. Inset: shows enlarged view of the rock avalanche zone with joints and foliation. Figure 5. Damage caused by the Raunthi Gad landslide a. Photograph taken from the helicopter showing the triangle shaped release area of the rock avalanche b. Foliation and joint-1 exposed on the joint-2 section, c.",
+      "corroboration_status": "single_source_partial_context_match",
+      "matching_official_source_count": 1,
+      "matching_claim_check_source_count": 1,
+      "matching_context_only_source_count": 0,
+      "matching_specific_claim_source_count": 0,
+      "evidence_records": [
+        {
+          "source_id": "pib_gsi_chamoli_2021",
+          "source_name": "GSI technical findings republished by Press Information Bureau",
+          "publisher": "Ministry of Mines / Geological Survey of India (hosted by PIB)",
+          "publication_date": "2021-06-28",
+          "url": "https://www.pib.gov.in/PressReleasePage.aspx?PRID=1730923&lang=2&reg=48",
+          "evidence_role": "claim_check",
+          "match_status": "partial_context_match",
+          "matching_signals": {
+            "place_match": true,
+            "matched_place_aliases": [
+              "raunthi garh"
+            ],
+            "date_match": true,
+            "matched_date_phrases": [
+              "february 7 2021"
+            ],
+            "district_match": true,
+            "matched_district_phrases": [
+              "chamoli district"
+            ],
+            "event_context_match": true,
+            "matched_event_phrases": [
+              "avalanche",
+              "rock mass"
+            ],
+            "specific_claim_complete": false,
+            "specific_claim_groups": [
+              {
+                "required_any_of": [
+                  "avalanche",
+                  "rock mass"
+                ],
+                "matched": true,
+                "matched_phrases": [
+                  "avalanche",
+                  "rock mass"
+                ]
+              },
+              {
+                "required_any_of": [
+                  "debris flow"
+                ],
+                "matched": false,
+                "matched_phrases": []
+              }
+            ],
+            "signals_found_anywhere": {
+              "place_match": true,
+              "date_match": true,
+              "district_match": true,
+              "event_context_match": true
+            },
+            "coherent_core_passage_count": 2,
+            "specific_claim_passage_count": 0
+          },
+          "evidence_excerpts": [
+            "On February 7, 2021, a flash flood event occurred in the Rishiganga and Dhauliganga valleys of Chamoli district, Uttarakhand causing heavy toll on human lives and massive destruction of two hydro power projects at Raini and Tapovan. A 13.2 MW Rishiganga Hydel Project near Raini has completely been wiped out and the barrage site at the under-construction Tapovan-Vishnugarh Hydel Project (520 MW) of NTPC Ltd. at Tapovan was severely damaged, by the torrent debris-laden flood water. However, no appreciable damage has been noticed further downstream of Joshimath, but the fury of the flash flood reached down to the Srinagar reservoir site in Rudraprayag district of Uttarakhand. Geological Survey of India, the 171-year-old premier geo-scientific organisation, has sent a team to find out the causes leading to the Disaster. According to Saibal Ghosh, Director GHRM Centre, GSI Central Headquarter"
+          ]
+        }
+      ],
+      "review_status": "needs_human_review",
+      "verification_status": "not_verified",
+      "specific_sub_event_claim_verified": false,
+      "may_be_used_for_model_validation": false,
+      "model_accuracy": "not_evaluated",
+      "decision_note": "Source matches are documentary corroboration only. A human reviewer must inspect the cited passage and source. No record is promoted to ground truth by this process."
+    },
+    {
+      "candidate_id": "nrsc_atlas_kedarnath_2013",
+      "event_name": "Kedarnath landslide and related flood disaster",
+      "event_type": "reactivated_landslide_with_related_flash_flood_as_described_by_source",
+      "event_date_start": "2013-06-16",
+      "event_date_end": "2013-06-17",
+      "place_name": "Kedarnath valley / town",
+      "state": "Uttarakhand",
+      "district": null,
+      "source_document_id": "nrsc_landslide_atlas_2023",
+      "pdf_page_number": 40,
+      "figure_number": 16,
+      "evidence_excerpt": "National Remote Sensing Centre, ISRO, Hyderabad nrsc Landslide Atlas of India 25 Figure 16. Landslides around Kedarnath, Uttarakhand. During 16-17 June 2013, heavy rainfall (approximately 325 mm) caused widespread flash floods in the upstream areas of Mandakini, Alaknanda and Bhagirathi rivers resulting in massive damage to properties and infrastructures in the Kedarnath valley and areas in the downstream of Badrinath and Gangotri. A large reactivated landslide breached an artificial embankment north of the Kedarnath town.",
+      "corroboration_status": "no_independent_match",
+      "matching_official_source_count": 0,
+      "matching_claim_check_source_count": 0,
+      "matching_context_only_source_count": 0,
+      "matching_specific_claim_source_count": 0,
+      "evidence_records": [
+        {
+          "source_id": "nidm_india_disaster_report_2013",
+          "source_name": "India Disaster Report 2013",
+          "publisher": "National Institute of Disaster Management, Ministry of Home Affairs",
+          "publication_date": "2014",
+          "url": "https://nidm.mha.gov.in/PDF/pubs/India%20Disaster%20Report%202013.pdf",
+          "evidence_role": "claim_check",
+          "match_status": "no_match",
+          "matching_signals": {
+            "place_match": true,
+            "matched_place_aliases": [
+              "kedarnath shrine",
+              "kedarnath"
+            ],
+            "date_match": false,
+            "matched_date_phrases": [
+              "16 june 2013"
+            ],
+            "district_match": true,
+            "matched_district_phrases": [
+              "rudraprayag district"
+            ],
+            "event_context_match": true,
+            "matched_event_phrases": [
+              "landslide",
+              "landslides",
+              "flash flood",
+              "flash floods"
+            ],
+            "specific_claim_complete": false,
+            "specific_claim_groups": [
+              {
+                "required_any_of": [
+                  "reactivated landslide"
+                ],
+                "matched": false,
+                "matched_phrases": []
+              },
+              {
+                "required_any_of": [
+                  "artificial embankment"
+                ],
+                "matched": false,
+                "matched_phrases": []
+              },
+              {
+                "required_any_of": [
+                  "breached",
+                  "breach"
+                ],
+                "matched": false,
+                "matched_phrases": []
+              }
+            ],
+            "signals_found_anywhere": {
+              "place_match": true,
+              "date_match": true,
+              "district_match": true,
+              "event_context_match": true
+            },
+            "coherent_core_passage_count": 0,
+            "specific_claim_passage_count": 0
+          },
+          "evidence_excerpts": [
+            "11 3. UTTARAKHAND FLASH FLOODS - JUNE 2013 The Disaster: The State of Uttarakhand, being part of the Himalayan region, is extremely vulnerable to natural disasters. Natural hazards, like earthquakes, landslides, avalanches, cloudbursts, hailstorms, Glacial Lake Outburst Floods (GLOFs), flash floods, lightning, and forest fires, etc. have been a cause of major disasters in the State. On 16 June 2013, the State suffered yet another mega disaster, one of the worst disasters in the living memory, causing widespread damage and destruction, besides heavy casualties. The entire State was hit by very heavy rainfall and flash floods. Though all the thirteen districts of the State were hit, five districts, namely Bageshwar, Chamoli, Pithoragarh, Rudraprayag and Uttarkashi were the worst affected. The disaster coincided with the peak tourist and pilgrimage season, significantly enhancing the number",
+            "13 uttArAKHAnd FLASH FLoodS - JunE 2013 Figure 3: The Indian Meteorological Department image (17th June 2013) suggested heavy rainfall on the higher reaches of Uttarakhand, Himachal and Nepal Himalaya As per the Indian Meteorological Department (IMD), the rainfall in the State between 15 June and 18 June 2013 was measured at 385.1 mm, against the normal rainfall of 71.3 mm, which was in excess by 440%. The cumulative rainfall from June 14-18 for all the IMD stations located in Uttarakhand is shown in Figure 4. Thus, it can be inferred that the disaster was the result of extra precipitation in a very short duration of time, which resulted in heavy water discharge in various rivers and streams. The worst impact of the disaster on human settlements was in the Kedarnath shrine area (Gaurikund to Kedarnath), the Mandakini valley, the Alaknanda valley (at Gobindghat and upstream), the Pindar v"
+          ]
+        },
+        {
+          "source_id": "pib_culture_kedarnath_2013",
+          "source_name": "Kedarnath restoration and flash-flood context",
+          "publisher": "Ministry of Culture, Government of India (hosted by PIB)",
+          "publication_date": "2013-11-19",
+          "url": "https://www.pib.gov.in/newsite/PrintRelease.aspx?lang=2&reg=48&relid=100700",
+          "evidence_role": "context_only",
+          "match_status": "no_match",
+          "matching_signals": {
+            "place_match": true,
+            "matched_place_aliases": [
+              "kedarnath"
+            ],
+            "date_match": false,
+            "matched_date_phrases": [],
+            "district_match": false,
+            "matched_district_phrases": [],
+            "event_context_match": false,
+            "matched_event_phrases": [],
+            "specific_claim_complete": false,
+            "specific_claim_groups": [
+              {
+                "required_any_of": [
+                  "reactivated landslide"
+                ],
+                "matched": false,
+                "matched_phrases": []
+              },
+              {
+                "required_any_of": [
+                  "artificial embankment"
+                ],
+                "matched": false,
+                "matched_phrases": []
+              },
+              {
+                "required_any_of": [
+                  "breached",
+                  "breach"
+                ],
+                "matched": false,
+                "matched_phrases": []
+              }
+            ],
+            "signals_found_anywhere": {
+              "place_match": true,
+              "date_match": false,
+              "district_match": false,
+              "event_context_match": false
+            },
+            "coherent_core_passage_count": 0,
+            "specific_claim_passage_count": 0
+          },
+          "evidence_excerpts": []
+        }
+      ],
+      "review_status": "needs_human_review",
+      "verification_status": "not_verified",
+      "specific_sub_event_claim_verified": false,
+      "may_be_used_for_model_validation": false,
+      "model_accuracy": "not_evaluated",
+      "decision_note": "Source matches are documentary corroboration only. A human reviewer must inspect the cited passage and source. No record is promoted to ground truth by this process."
+    }
+  ],
+  "limitations": [
+    "Only exact allowlisted official source URLs are fetched.",
+    "No arbitrary crawling, search-engine discovery, or AI inference is performed.",
+    "Evidence signals from separate passages are never combined into a match.",
+    "A source match does not establish that an event is a model prediction hit.",
+    "Context-only sources are excluded from claim-check and specific-claim counts.",
+    "The Kedarnath artificial-embankment sub-event requires separate documentary support and human review.",
+    "One source match is not independent multi-source verification.",
+    "No candidate is eligible for training or model validation until separate human review and a defined ground-truth process."
+  ]
+}

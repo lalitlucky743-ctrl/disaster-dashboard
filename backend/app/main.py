@@ -14,6 +14,7 @@ from .routers import (
     alerts,
     weather_proxy,
     monitoring,
+    evidence,
 )
 from .services.monitoring.scheduler import (
     start_monitoring,
@@ -30,13 +31,13 @@ async def lifespan(app: FastAPI):
     # Register imported SQLAlchemy models and create missing tables.
     Base.metadata.create_all(bind=engine)
 
-    # Start the automatic monitoring loop.
+    # Start the existing automatic monitoring loop.
     start_monitoring()
 
     try:
         yield
     finally:
-        # Stop the loop cleanly during application shutdown.
+        # Stop the monitoring loop cleanly during shutdown.
         await stop_monitoring()
 
 
@@ -50,7 +51,8 @@ app = FastAPI(
     description=(
         "Real-time disaster intelligence platform for "
         "weather monitoring, ML-based risk prediction, "
-        "and official disaster alerts."
+        "official disaster alerts, and official evidence "
+        "corroboration."
     ),
     lifespan=lifespan,
 )
@@ -163,6 +165,20 @@ app.include_router(
 app.include_router(
     monitoring.router,
     prefix="/api/monitoring",
+    tags=["Automatic Monitoring"],
+)
+
+
+# ==========================================================
+# OFFICIAL EVIDENCE
+# ==========================================================
+
+
+
+app.include_router(
+    evidence.router,
+    prefix="/api/evidence",
+    tags=["Official Evidence"],
 )
 
 

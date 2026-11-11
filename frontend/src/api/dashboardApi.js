@@ -1,3 +1,4 @@
+
 import { api } from "./client";
 
 export const dashboardApi = {
@@ -33,6 +34,10 @@ export const dashboardApi = {
     return api.get(
       `/api/monitoring/history?limit=${encodeURIComponent(limit)}`
     );
+  },
+
+  getLatestEvidence() {
+    return api.get("/api/evidence/latest");
   },
 
   runAutomaticMonitoringOnce() {

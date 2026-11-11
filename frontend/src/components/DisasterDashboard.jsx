@@ -52,6 +52,7 @@ import { dashboardApi } from "../api/dashboardApi";
 import AutomaticModelMonitoring from "./AutomaticModelMonitoring";
 import { aiApi } from "../api/aiApi";
 import { useAuth } from "../context/AuthContext";
+import OfficialEvidencePanel from "./OfficialEvidencePanel";
 
 const API_BASE_URL = String(
   import.meta.env.VITE_API_URL || "https://disaster-dashboard-kgbb.onrender.com"
@@ -3608,6 +3609,7 @@ export default function DisasterDashboard() {
         <RiskMap districts={districts} selectedDisaster={selectedDisaster} selectedRisk={selectedRisk} onSelectDistrict={handleDistrictSelect} onSelectLocation={handleLocationSelect} onPrefetchLocations={handlePrefetchLocations} locationMlLoadingByKey={locationMlLoadingByKey} alerts={alerts} selectedPlace={selectedPlace} mapResetSignal={mapResetSignal} />
       </section>
             <AutomaticModelMonitoring />
+            <OfficialEvidencePanel />
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <section className="rounded-2xl border border-slate-800 bg-slate-900/80 p-4">

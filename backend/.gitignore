@@ -12,3 +12,6 @@ dist/
 venv/
 
 app/ml/disaster_model.pkl
+.cache/
+__pycache__/
+*.py[cod]
