@@ -218,6 +218,83 @@ export default function AutomaticModelMonitoring() {
   const districtRows = Array.isArray(latestPayload?.results)
     ? latestPayload.results
     : [];
+      // Build the model comparison chart only from successful predictions.
+  const readChartScore = (model) => {
+    if (model?.status !== "ok") return null;
+
+    const score = Number(model?.result?.risk_score);
+
+    return Number.isFinite(score) && score >= 0 && score <= 100
+      ? score
+      : null;
+  };
+
+  const chartRows = districtRows.map((row, index) => ({
+    district: row.district,
+    index,
+    production: readChartScore(row.production),
+    candidate: readChartScore(row.candidate_v5),
+  }));
+
+  const chartWidth = 960;
+  const chartHeight = 350;
+  const chartLeft = 62;
+  const chartRight = 930;
+  const chartTop = 24;
+  const chartBottom = 228;
+
+  const chartX = (index) =>
+    chartRows.length <= 1
+      ? (chartLeft + chartRight) / 2
+      : chartLeft +
+        (index / (chartRows.length - 1)) * (chartRight - chartLeft);
+
+  const chartY = (score) =>
+    chartBottom - (score / 100) * (chartBottom - chartTop);
+
+  // Break the line whenever a district has no valid model result.
+  // This avoids connecting across unavailable predictions.
+  const buildChartPaths = (key) => {
+    const paths = [];
+    let currentSegment = [];
+
+    chartRows.forEach((point) => {
+      const score = point[key];
+
+      if (score === null) {
+        if (currentSegment.length) {
+          paths.push(currentSegment.join(" "));
+          currentSegment = [];
+        }
+        return;
+      }
+
+      const command = `${
+        currentSegment.length ? "L" : "M"
+      } ${chartX(point.index).toFixed(1)} ${chartY(score).toFixed(1)}`;
+
+      currentSegment.push(command);
+    });
+
+    if (currentSegment.length) {
+      paths.push(currentSegment.join(" "));
+    }
+
+    return paths;
+  };
+
+  const productionChartPaths = buildChartPaths("production");
+  const candidateChartPaths = buildChartPaths("candidate");
+
+  const chartHasData = chartRows.some(
+    (point) => point.production !== null || point.candidate !== null
+  );
+
+  const chartBothModelCount = chartRows.filter(
+    (point) => point.production !== null && point.candidate !== null
+  ).length;
+
+  const chartTicks = [0, 25, 50, 75, 100];
 
   const modelSuccessCount = districtRows.filter(
     (row) =>
@@ -405,6 +482,195 @@ export default function AutomaticModelMonitoring() {
           <h3 className="text-xs font-semibold text-slate-200">
             District model comparison
           </h3>
+                {/* Production vs Candidate V5 comparison chart */}
+      <div className="mt-5 rounded-xl border border-slate-800 bg-slate-950/30 p-3 sm:p-4">
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <h3 className="text-xs font-semibold text-slate-200">
+              Landslide Model Score Comparison
+            </h3>
+            <p className="mt-1 text-[10px] text-slate-500">
+              District-wise comparison using the latest monitoring run
+            </p>
+          </div>
+
+          <span className="text-[10px] text-slate-400">
+            Both models available: {chartBothModelCount}/13 districts
+          </span>
+        </div>
+
+        {chartHasData ? (
+          <>
+            <div className="mt-4 overflow-x-auto">
+              <svg
+                viewBox={`0 0 ${chartWidth} ${chartHeight}`}
+                className="h-auto w-full min-w-[780px]"
+                role="img"
+                aria-label="Production and Candidate V5 landslide risk score comparison across Uttarakhand districts"
+              >
+                {/* Horizontal score grid */}
+                {chartTicks.map((tick) => {
+                  const y = chartY(tick);
+
+                  return (
+                    <g key={`tick-${tick}`}>
+                      <line
+                        x1={chartLeft}
+                        y1={y}
+                        x2={chartRight}
+                        y2={y}
+                        stroke="#334155"
+                        strokeWidth="1"
+                        strokeDasharray="4 5"
+                      />
+
+                      <text
+                        x={chartLeft - 12}
+                        y={y + 3}
+                        fontSize="10"
+                        fill="#94a3b8"
+                        textAnchor="end"
+                      >
+                        {tick}
+                      </text>
+                    </g>
+                  );
+                })}
+
+                {/* Chart axes */}
+                <line
+                  x1={chartLeft}
+                  y1={chartTop}
+                  x2={chartLeft}
+                  y2={chartBottom}
+                  stroke="#64748b"
+                  strokeWidth="1"
+                />
+
+                <line
+                  x1={chartLeft}
+                  y1={chartBottom}
+                  x2={chartRight}
+                  y2={chartBottom}
+                  stroke="#64748b"
+                  strokeWidth="1"
+                />
+
+                {/* Production model line */}
+                {productionChartPaths.map((path, index) => (
+                  <path
+                    key={`production-path-${index}`}
+                    d={path}
+                    fill="none"
+                    stroke="#38bdf8"
+                    strokeWidth="3"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                ))}
+
+                {/* Candidate V5 model line */}
+                {candidateChartPaths.map((path, index) => (
+                  <path
+                    key={`candidate-path-${index}`}
+                    d={path}
+                    fill="none"
+                    stroke="#a78bfa"
+                    strokeWidth="3"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                ))}
+
+                {/* Production score points */}
+                {chartRows.map((point) =>
+                  point.production === null ? null : (
+                    <circle
+                      key={`production-point-${point.district}`}
+                      cx={chartX(point.index)}
+                      cy={chartY(point.production)}
+                      r="4.5"
+                      fill="#38bdf8"
+                      stroke="#0f172a"
+                      strokeWidth="2"
+                    >
+                      <title>
+                        {`${point.district} · Production: ${point.production}/100`}
+                      </title>
+                    </circle>
+                  )
+                )}
+
+                {/* Candidate score points */}
+                {chartRows.map((point) =>
+                  point.candidate === null ? null : (
+                    <circle
+                      key={`candidate-point-${point.district}`}
+                      cx={chartX(point.index)}
+                      cy={chartY(point.candidate)}
+                      r="4.5"
+                      fill="#a78bfa"
+                      stroke="#0f172a"
+                      strokeWidth="2"
+                    >
+                      <title>
+                        {`${point.district} · Candidate V5: ${point.candidate}/100`}
+                      </title>
+                    </circle>
+                  )
+                )}
+
+                {/* District labels */}
+                {chartRows.map((point) => {
+                  const x = chartX(point.index);
+
+                  return (
+                    <text
+                      key={`district-label-${point.district}`}
+                      x={x}
+                      y="250"
+                      transform={`rotate(38 ${x} 250)`}
+                      fontSize="10"
+                      fill="#cbd5e1"
+                      textAnchor="start"
+                    >
+                      {point.district}
+                    </text>
+                  );
+                })}
+              </svg>
+            </div>
+
+            {/* Legend */}
+            <div className="mt-4 flex flex-wrap items-center gap-x-5 gap-y-2">
+              <div className="flex items-center gap-2">
+                <span className="h-2.5 w-2.5 rounded-full bg-sky-400" />
+                <span className="text-[10px] text-slate-300">
+                  Production Model
+                </span>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <span className="h-2.5 w-2.5 rounded-full bg-violet-400" />
+                <span className="text-[10px] text-slate-300">
+                  Candidate V5
+                </span>
+              </div>
+            </div>
+
+            <p className="mt-3 text-[10px] leading-relaxed text-slate-500">
+              Scores are model-estimated landslide susceptibility scores.
+              Missing results are left as gaps; they are not treated as zero.
+              A higher score does not establish better model accuracy.
+            </p>
+          </>
+        ) : (
+          <div className="mt-4 rounded-xl border border-dashed border-slate-800 p-5 text-center text-[11px] text-slate-500">
+            No valid model scores are available for the comparison graph yet.
+            Complete a monitoring cycle to populate it.
+          </div>
+        )}
+      </div>
           <span className="text-[10px] text-slate-500">
             {districtRows.length}/13 records
           </span>
