@@ -29,3 +29,5 @@ app/ml/data/landslide/*oof*.csv
 *.working-*
 *.bak
 *.backup
+
+!app/ml/data/landslide/landslide_model_candidate_v5_extra_trees_no_coords14.pkl

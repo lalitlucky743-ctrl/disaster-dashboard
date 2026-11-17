@@ -19,7 +19,7 @@ import pandas as pd
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
-
+from app.services.weather.client import fetch_json
 # Candidate-only retries for transient upstream connection failures.
 _HTTP_RETRY = Retry(
     total=1,
@@ -27,9 +27,10 @@ _HTTP_RETRY = Retry(
     read=1,
     status=1,
     backoff_factor=0.5,
-    status_forcelist=(408, 429, 500, 502, 503, 504),
+    status_forcelist=(408, 500, 502, 503, 504),
     allowed_methods=frozenset({"GET"}),
-    respect_retry_after_header=True,
+    respect_retry_after_header=False,
+    raise_on_status=False,
 )
 _HTTP_SESSION = requests.Session()
 _HTTP_ADAPTER = HTTPAdapter(max_retries=_HTTP_RETRY)
@@ -557,6 +558,7 @@ def extract_dem_features(latitude, longitude):
         }
 
 
+
 # ============================================================
 # LIVE WEATHER
 # ============================================================
@@ -583,18 +585,23 @@ def fetch_live_weather(latitude, longitude):
         "precipitation_unit": "mm",
     }
 
-    response = _HTTP_SESSION.get(
+    payload, metadata = fetch_json(
         OPEN_METEO_URL,
-        params=params,
-        timeout=(10, 30),
+        params,
     )
-    response.raise_for_status()
 
-    payload = response.json()
-    if "daily" not in payload:
-        raise RuntimeError("Live daily weather data was not returned.")
+    if not isinstance(payload, dict) or "daily" not in payload:
+        raise RuntimeError(
+            "Live daily weather data was not returned."
+        )
 
     return payload
+
+
+# ============================================================
+# DAILY WEATHER FEATURES
+# ============================================================
+
 
 
 # ============================================================
