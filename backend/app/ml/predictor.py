@@ -9,6 +9,7 @@ import pandas as pd
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+from app.services.weather.client import fetch_json
 
 
 # ============================================================
@@ -144,7 +145,6 @@ def fetch_live_weather(latitude, longitude):
         "longitude": float(longitude),
         "past_days": 35,
         "forecast_days": 1,
-        # Current observations are for the dashboard/UI.
         "current": (
             "temperature_2m,"
             "relative_humidity_2m,"
@@ -152,8 +152,6 @@ def fetch_live_weather(latitude, longitude):
             "rain,"
             "weather_code"
         ),
-        # Daily fields used for the ML features.
-        # No daily max/min, rain_sum, or weather_code is needed by V6.3.
         "daily": (
             "temperature_2m_mean,"
             "relative_humidity_2m_mean,"
@@ -165,63 +163,34 @@ def fetch_live_weather(latitude, longitude):
     }
 
     try:
-        # A short connect timeout and bounded read timeout make the request
-        # fail predictably instead of occupying a worker for a long time.
-        # The mounted adapter retries transient connection resets itself.
-        response = _get_open_meteo_session().get(
+        payload, metadata = fetch_json(
             OPEN_METEO_URL,
-            params=params,
-            timeout=(3, 12),
+            params,
         )
-        response.raise_for_status()
-    except requests.exceptions.HTTPError as exc:
-        error_response = exc.response
-        status_code = (
-            error_response.status_code
-            if error_response is not None
-            else None
-        )
-        if error_response is not None:
-            error_response.close()
-        if status_code == 429:
-            raise RuntimeError(
-                "Open-Meteo rate limit (HTTP 429). Prediction stopped; "
-                "no substitute or fabricated weather values were used."
-            ) from exc
+    except Exception as exc:
         raise RuntimeError(
-            f"Open-Meteo returned HTTP {status_code} after bounded retries."
+            f"Live weather unavailable: {exc}"
         ) from exc
-    except requests.exceptions.Timeout as exc:
-        raise RuntimeError(
-            "Open-Meteo weather request timed out after bounded retries."
-        ) from exc
-    except requests.exceptions.ConnectionError as exc:
-        raise RuntimeError(
-            "Open-Meteo connection failed after bounded retries "
-            f"({type(exc).__name__})."
-        ) from exc
-    except requests.exceptions.RequestException as exc:
-        raise RuntimeError(
-            f"Open-Meteo request failed ({type(exc).__name__})."
-        ) from exc
-
-    try:
-        payload = response.json()
-    except ValueError as exc:
-        raise RuntimeError("Open-Meteo returned invalid JSON.") from exc
-    finally:
-        response.close()
 
     if not isinstance(payload, dict):
-        raise RuntimeError("Open-Meteo response has an invalid structure.")
+        raise RuntimeError(
+            "Open-Meteo response has an invalid structure."
+        )
 
     if "daily" not in payload:
-        raise RuntimeError("Open-Meteo daily weather data was not returned.")
+        raise RuntimeError(
+            "Open-Meteo daily weather data was not returned."
+        )
 
     if "current" not in payload:
-        raise RuntimeError("Open-Meteo current weather data was not returned.")
+        raise RuntimeError(
+            "Open-Meteo current weather data was not returned."
+        )
 
     return payload
+
+
+
 
 
 # ============================================================

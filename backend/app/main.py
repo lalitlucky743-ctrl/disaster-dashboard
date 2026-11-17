@@ -30,9 +30,8 @@ from .services.monitoring.scheduler import (
 async def lifespan(app: FastAPI):
     # Register imported SQLAlchemy models and create missing tables.
     Base.metadata.create_all(bind=engine)
-
-    # Start the existing automatic monitoring loop.
-    start_monitoring()
+    # TEMPORARILY PAUSED: avoid repeated provider calls during demo preparation.
+    # start_monitoring()
 
     try:
         yield
