@@ -369,13 +369,17 @@ def _fetch_copernicus_glo90_terrain(latitude, longitude):
         "longitude": ",".join(f"{lon:.6f}" for _, lon in points),
     }
 
-    response = _HTTP_SESSION.get(
+    payload, _ = fetch_json(
         OPEN_METEO_ELEVATION_URL,
-        params=params,
-        timeout=(5, 12),
+        params,
+        cache_ttl=30 * 24 * 60 * 60,
+        stale_if_error=365 * 24 * 60 * 60,
     )
-    response.raise_for_status()
-    payload = response.json()
+
+    if not isinstance(payload, dict):
+        raise RuntimeError(
+            "Copernicus GLO-90 elevation fallback returned an invalid response."
+        )
 
     elevations = payload.get("elevation")
     if not isinstance(elevations, list) or len(elevations) != len(points):
